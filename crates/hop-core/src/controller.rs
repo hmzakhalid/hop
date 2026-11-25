@@ -8,7 +8,7 @@ use crate::keymap::{mac, MacMod};
 use crate::layout::{self, PcMove, Rect, Side};
 use crate::mapper::{KeyAction, KeyMapper, KeyOut, MapConfig};
 use crate::stats::Summary;
-use crate::wire::{Ack, Monitor, State, TransKind, Transition, ACK_ACTIVE, ACK_BLOCKED, ACK_EPOCH_DEAD, LEASE_US, MAX_TRANSITIONS};
+use crate::wire::{self, Ack, Monitor, State, TransKind, Transition, ACK_ACTIVE, ACK_BLOCKED, ACK_EPOCH_DEAD, LEASE_US, MAX_TRANSITIONS};
 use std::collections::VecDeque;
 
 /// Windows wheel units per Mac scroll point (a notch is 120 units, about 48 px of content).
@@ -297,7 +297,11 @@ impl Controller {
     }
 
     pub fn mouse_button(&mut self, now: u64, button: u8, down: bool) -> Output {
-        let bit = 1u8 << button.min(7);
+        let Some(bit) = wire::button_bit(button.into()) else {
+            // A button the wire cannot carry stays on the Mac, and goes nowhere while the PC has
+            // control.
+            return if self.remote.is_some() { Output::swallow() } else { Output::pass() };
+        };
         if self.remote.is_none() {
             if down {
                 self.local_buttons |= bit;
@@ -856,6 +860,17 @@ mod tests {
         let o = c.key(t + 2 * MS, mac::LEFT, true, false, hyper, (0.0, 0.0));
         assert_eq!(o.effect, Some(Effect::Leave { warp_to: (700.0, 400.0), reason: LeaveReason::Hotkey }));
         assert!(o.swallow);
+    }
+
+    #[test]
+    fn a_button_the_wire_cannot_carry_neither_blocks_crossing_nor_reaches_the_pc() {
+        let (mut c, t) = ready();
+        assert!(!c.mouse_button(t, 9, true).swallow);
+        assert_eq!(enter(&mut c, t + MS).effect, Some(Effect::Enter), "button 9 is not a held button");
+        let o = c.mouse_button(t + 2 * MS, 8, true);
+        assert!(o.swallow && o.send.is_none(), "{o:?}");
+        let o = c.mouse_button(t + 3 * MS, 4, true);
+        assert_eq!(o.send.map(|s| s.buttons), Some(1 << 4));
     }
 
     #[test]

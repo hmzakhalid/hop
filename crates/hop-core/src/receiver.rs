@@ -3,7 +3,7 @@
 //! everything is released when the Mac goes quiet.
 
 use crate::keymap::win;
-use crate::wire::{State, TransKind, DEADMAN_US};
+use crate::wire::{self, State, TransKind, DEADMAN_US};
 
 /// Shortest click the PC sees. A trackpad tap releases within a millisecond, and games that read
 /// the mouse once per frame never notice such a click. A release that comes sooner waits (in
@@ -132,10 +132,8 @@ impl Receiver {
         let stale_buttons = self.held_buttons & !s.buttons;
         if stale_buttons != 0 {
             self.flush(inj);
-            for b in 0..8u8 {
-                if stale_buttons & (1 << b) != 0 {
-                    self.release_button(b, inj);
-                }
+            for b in wire::buttons_in(stale_buttons) {
+                self.release_button(b, inj);
             }
             self.held_buttons &= s.buttons;
         }
@@ -155,9 +153,11 @@ impl Receiver {
             }
             match t.kind {
                 TransKind::ButtonDown | TransKind::ButtonUp => {
-                    let down = t.kind == TransKind::ButtonDown;
-                    let b = t.code.min(7) as u8;
-                    let bit = 1u8 << b;
+                    let Some(bit) = wire::button_bit(t.code) else {
+                        self.applied = id; // not a button the wire carries: nothing to do
+                        continue;
+                    };
+                    let (b, down) = (t.code as u8, t.kind == TransKind::ButtonDown);
                     if down {
                         self.move_now((t.x, t.y), inj);
                         if !inj.button(b, true) {
@@ -168,7 +168,7 @@ impl Receiver {
                         self.button_down_at[b as usize] = now;
                     } else if self.held_buttons & bit != 0 {
                         if now.saturating_sub(self.button_down_at[b as usize]) < MIN_CLICK_US {
-                            return true; // too soon: the next datagram (or tick) tries again
+                            return true; // too soon: the next datagram tries again
                         }
                         self.move_now((t.x, t.y), inj);
                         if !inj.button(b, false) {
@@ -231,11 +231,8 @@ impl Receiver {
             }
         }
         if self.retry_buttons != 0 {
-            let b = std::mem::take(&mut self.retry_buttons);
-            for i in 0..8u8 {
-                if b & (1 << i) != 0 {
-                    self.release_button(i, inj);
-                }
+            for b in wire::buttons_in(std::mem::take(&mut self.retry_buttons)) {
+                self.release_button(b, inj);
             }
         }
     }
@@ -279,11 +276,8 @@ impl Receiver {
         for k in keys {
             self.release_key(k, inj);
         }
-        let held = std::mem::take(&mut self.held_buttons);
-        for b in 0..8u8 {
-            if held & (1 << b) != 0 {
-                self.release_button(b, inj);
-            }
+        for b in wire::buttons_in(std::mem::take(&mut self.held_buttons)) {
+            self.release_button(b, inj);
         }
         self.active = false;
     }

@@ -89,6 +89,17 @@ pub struct Transition {
     pub y: i32,
 }
 
+/// The bit for mouse button `b` in [`State::buttons`], if the wire carries it (0–7; Windows can
+/// inject 0–4).
+pub fn button_bit(b: u16) -> Option<u8> {
+    (b < 8).then(|| 1u8 << b)
+}
+
+/// The buttons set in a [`State::buttons`] mask.
+pub fn buttons_in(mask: u8) -> impl Iterator<Item = u8> {
+    (0..8u8).filter(move |b| mask & (1 << b) != 0)
+}
+
 /// Mac → PC. Every datagram is the full state, so any one of them repairs earlier loss.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct State {
