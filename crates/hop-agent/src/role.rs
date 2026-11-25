@@ -13,7 +13,10 @@ use std::time::Duration;
 /// The command line the service starts its helper with: `hop-agent system-helper --stop-event NAME`.
 pub const HELPER_COMMAND: &str = "system-helper";
 pub const STOP_EVENT_FLAG: &str = "--stop-event";
+/// How often `--stats` prints.
+pub const STATS_EVERY: Duration = Duration::from_secs(10);
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct RunOptions {
     pub port: u16,
     pub name: Option<String>,
@@ -28,7 +31,7 @@ pub struct RunOptions {
     pub video_file: Option<PathBuf>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Console,
     /// The SYSTEM helper the service keeps in the user's session.
@@ -204,13 +207,13 @@ fn serve(role: Role, opts: RunOptions, store: AgentStore, log: &Arc<Log>) -> Res
         std::thread::spawn(move || {
             let mut last = crate::platform::usage().cpu_seconds;
             loop {
-                std::thread::sleep(Duration::from_secs(10));
+                std::thread::sleep(STATS_EVERY);
                 let u = crate::platform::usage();
                 log.say(format!(
                     "stats: memory {:.1} MB (private {:.1} MB) · cpu {:.2}%",
                     u.memory_mb,
                     u.private_mb,
-                    (u.cpu_seconds - last) / 10.0 * 100.0
+                    (u.cpu_seconds - last) / STATS_EVERY.as_secs_f64() * 100.0
                 ));
                 last = u.cpu_seconds;
             }
@@ -218,7 +221,8 @@ fn serve(role: Role, opts: RunOptions, store: AgentStore, log: &Arc<Log>) -> Res
     }
 
     let video_log = log.clone();
-    crate::platform::start_video(role == Role::Service, opts.port, opts.video_file.clone(), move |m| video_log.say(m), stop.clone());
+    let video = crate::video::VideoArgs { port: opts.port, for_service: role == Role::Service, file: opts.video_file.clone() };
+    crate::video::supervise(video, move |m| video_log.say(m), stop.clone());
 
     let cfg = AgentConfig {
         bind: ([0, 0, 0, 0], opts.port).into(),
@@ -258,34 +262,4 @@ fn serve(role: Role, opts: RunOptions, store: AgentStore, log: &Arc<Log>) -> Res
             e.to_string()
         }
     })
-}
-
-/// `hop-agent video`: the screen-view server, in its own process so a fault in capture or in a
-/// GPU driver can never take input down with it. The agent starts it and keeps it running.
-pub fn run_video(role: Role, port: u16, file: Option<PathBuf>) -> Result<(), String> {
-    use hop_core::stream::{self, FileSource, Source};
-    let store = role.store();
-    let keys = store.keys().map_err(|e| format!("cannot read the key in {}: {e}", store.dir.display()))?;
-    let video_port = hop_core::video::port_for(port).ok_or("the port is too high")?;
-    let sock = std::net::UdpSocket::bind(std::net::SocketAddr::from(([0, 0, 0, 0], video_port))).map_err(|e| format!("video port {video_port}: {e}"))?;
-    let stop = Arc::new(AtomicBool::new(false));
-    if role == Role::Console {
-        crate::platform::on_ctrl_c(stop.clone());
-    }
-    crate::platform::stop_with_parent(stop.clone());
-    let open = || -> std::io::Result<Box<dyn Source>> {
-        match &file {
-            Some(f) => Ok(Box::new(FileSource::open(f, 60)?)),
-            None => crate::platform::screen_source(role == Role::Service),
-        }
-    };
-    let say = |m: &str| {
-        use std::io::Write;
-        let mut out = std::io::stdout().lock();
-        let _ = writeln!(out, "{m}");
-        let _ = out.flush();
-    };
-    say(&format!("video: serving on port {video_port}"));
-    // The pairing is read again for every handshake, so a new pairing applies at once.
-    stream::serve(sock, &keys, || store.peer().map(|p| p.public), open, &stop, say).map_err(|e| e.to_string())
 }

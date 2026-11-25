@@ -12,6 +12,7 @@
 
 use crate::platform::STOP_EVENT_PREFIX;
 use crate::scm::{open_service, service_state, wide, Missing, SERVICE_NAME};
+use crate::backoff::Backoff;
 use crate::role::{append_service_log as log_line, computer_name, pairing_banner, system_data_dir, Role, HELPER_COMMAND, STOP_EVENT_FLAG};
 use hop_core::agent::{self, PairingWindow};
 use hop_core::crypto::{fingerprint, new_pairing_code};
@@ -545,9 +546,6 @@ struct Helper {
     started: std::time::Instant,
 }
 
-/// A helper that exits sooner than this counts as failing: relaunches back off.
-const HEALTHY_RUN: Duration = Duration::from_secs(30);
-const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 unsafe extern "system" fn service_main(_argc: u32, _argv: *mut windows_sys::core::PWSTR) {
     let name = wide(SERVICE_NAME);
@@ -562,25 +560,21 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut windows_sys::core
         let _ = create_private_dir(&data);
     }
     let mut child: Option<Helper> = None;
-    let mut backoff = Duration::from_secs(1);
+    let mut backoff = Backoff::new();
     let mut next_launch = std::time::Instant::now();
     while !STOP.load(Ordering::SeqCst) {
         let session = WTSGetActiveConsoleSessionId();
         if let Some(c) = &child {
             let ran = c.started.elapsed();
-            if ran >= HEALTHY_RUN {
-                backoff = Duration::from_secs(1); // however this helper ends, it was healthy
-            }
             if let Some(code) = exit_code(c.process) {
-                if ran < HEALTHY_RUN {
-                    backoff = (backoff * 2).min(MAX_BACKOFF);
-                }
-                log_line(&format!("helper exited with code {code} after {}s (see agent.log); next try in {}s", ran.as_secs(), backoff.as_secs()));
-                next_launch = std::time::Instant::now() + backoff;
+                let wait = backoff.failed_after(ran);
+                log_line(&format!("helper exited with code {code} after {}s (see agent.log); next try in {}s", ran.as_secs(), wait.as_secs()));
+                next_launch = std::time::Instant::now() + wait;
                 let c = child.take().unwrap();
                 CloseHandle(c.process);
                 CloseHandle(c.stop);
             } else if c.session != session {
+                backoff.stopped_after(ran);
                 let c = child.take().unwrap();
                 stop_helper(c.process, c.stop);
                 next_launch = std::time::Instant::now();
@@ -593,9 +587,9 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut windows_sys::core
                     child = Some(Helper { process, stop, session, started: std::time::Instant::now() });
                 }
                 Err(e) => {
-                    backoff = (backoff * 2).min(MAX_BACKOFF);
-                    log_line(&format!("starting the helper in session {session} failed: {e}; next try in {}s", backoff.as_secs()));
-                    next_launch = std::time::Instant::now() + backoff;
+                    let wait = backoff.failed_after(Duration::ZERO);
+                    log_line(&format!("starting the helper in session {session} failed: {e}; next try in {}s", wait.as_secs()));
+                    next_launch = std::time::Instant::now() + wait;
                 }
             }
         }

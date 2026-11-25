@@ -1,4 +1,5 @@
-//! The operating system under the agent: input injection, Ctrl+C, resource usage.
+//! The operating system under the agent: input injection, Ctrl+C and service stop signals,
+//! resource usage, and helper processes that end with the agent.
 
 use hop_core::agent::Platform;
 
@@ -114,58 +115,11 @@ pub fn usage() -> Usage {
     Usage::default()
 }
 
-// ---- the screen-view process ---------------------------------------------------------------
-
-/// Start `hop-agent video` (the screen-view server) and keep it running while the agent runs,
-/// relaunching with a growing delay if it exits. Its output goes to `say`. On Windows it always
-/// runs (capturing the screen); elsewhere only to replay a recording (`file`), for testing.
-pub fn start_video(
-    for_service: bool,
-    port: u16,
-    file: Option<std::path::PathBuf>,
-    say: impl Fn(&str) + Send + 'static,
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) {
-    use std::io::BufRead;
-    use std::time::{Duration, Instant};
-    if !cfg!(windows) && file.is_none() {
-        return;
-    }
-    let Ok(exe) = std::env::current_exe() else { return };
-    std::thread::spawn(move || {
-        let mut backoff = Duration::from_secs(1);
-        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-            let started = Instant::now();
-            let mut cmd = std::process::Command::new(&exe);
-            cmd.args(["video", "--port", &port.to_string()]);
-            if for_service {
-                cmd.arg("--for-service");
-            }
-            if let Some(f) = &file {
-                cmd.arg("--file").arg(f);
-            }
-            cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped());
-            match spawn_tied(&mut cmd) {
-                Ok(mut child) => {
-                    if let Some(out) = child.stdout.take() {
-                        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
-                            say(&line);
-                        }
-                    }
-                    let status = child.wait();
-                    say(&format!("video: the video process exited ({status:?})"));
-                }
-                Err(e) => say(&format!("video: cannot start the video process: {e}")),
-            }
-            backoff = if started.elapsed() > Duration::from_secs(30) { Duration::from_secs(1) } else { (backoff * 2).min(Duration::from_secs(60)) };
-            std::thread::sleep(backoff);
-        }
-    });
-}
+// ---- helper processes ----------------------------------------------------------------------
 
 /// Spawn a child that dies with this process (a job object that kills its members on close).
 #[cfg(windows)]
-fn spawn_tied(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+pub fn spawn_tied(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use std::sync::OnceLock;
@@ -189,7 +143,7 @@ fn spawn_tied(cmd: &mut std::process::Command) -> std::io::Result<std::process::
 }
 
 #[cfg(not(windows))]
-fn spawn_tied(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+pub fn spawn_tied(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
     cmd.spawn() // the child watches for its parent's exit (see `stop_with_parent`)
 }
 
@@ -197,32 +151,12 @@ fn spawn_tied(cmd: &mut std::process::Command) -> std::io::Result<std::process::
 pub fn stop_with_parent(stop: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     #[cfg(unix)]
     std::thread::spawn(move || {
-        let parent = unsafe { libc_getppid() };
-        while unsafe { libc_getppid() } == parent {
+        let parent = std::os::unix::process::parent_id();
+        while std::os::unix::process::parent_id() == parent {
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
     });
     #[cfg(windows)]
     let _ = stop; // the job object ends us with the agent
-}
-
-#[cfg(unix)]
-extern "C" {
-    #[link_name = "getppid"]
-    fn libc_getppid() -> i32;
-}
-
-/// The screen, captured and encoded, as the video channel's source.
-#[cfg(windows)]
-pub fn screen_source(follow_input_desktop: bool) -> std::io::Result<Box<dyn hop_core::stream::Source>> {
-    use hop_video::capture::Settings;
-    let s = hop_video::source::ScreenSource::open(&Settings { follow_input_desktop, hevc: true, ..Settings::default() })?;
-    println!("video: capturing {}", s.describe());
-    Ok(Box::new(s))
-}
-
-#[cfg(not(windows))]
-pub fn screen_source(_: bool) -> std::io::Result<Box<dyn hop_core::stream::Source>> {
-    Err(std::io::Error::other("screen capture needs Windows; use --file to replay a recording"))
 }

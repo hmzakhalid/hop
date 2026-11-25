@@ -97,21 +97,24 @@ impl<R: Record> Store<R> {
 
     /// This side's static key, created on first use.
     pub fn keys(&self) -> io::Result<StaticKeys> {
-        let path = self.dir.join(R::KEY_FILE);
-        match fs::read_to_string(&path) {
-            Ok(s) => {
-                let kv = parse_kv(&s);
-                match (kv.get("private").and_then(|v| unhex32(v)), kv.get("public").and_then(|v| unhex32(v))) {
-                    (Some(private), Some(public)) => Ok(StaticKeys { private, public }),
-                    _ => Err(io::Error::new(io::ErrorKind::InvalidData, format!("{} is damaged", path.display()))),
-                }
-            }
+        match self.existing_keys() {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 let k = StaticKeys::generate();
-                write_private(&path, &format!("private = {}\npublic = {}\n", hex32(&k.private), hex32(&k.public)))?;
+                write_private(&self.dir.join(R::KEY_FILE), &format!("private = {}\npublic = {}\n", hex32(&k.private), hex32(&k.public)))?;
                 Ok(k)
             }
-            Err(e) => Err(e),
+            r => r,
+        }
+    }
+
+    /// This side's static key, if it has one: for a process that must use the key the peer
+    /// knows, never make a new one.
+    pub fn existing_keys(&self) -> io::Result<StaticKeys> {
+        let path = self.dir.join(R::KEY_FILE);
+        let kv = parse_kv(&fs::read_to_string(&path)?);
+        match (kv.get("private").and_then(|v| unhex32(v)), kv.get("public").and_then(|v| unhex32(v))) {
+            (Some(private), Some(public)) => Ok(StaticKeys { private, public }),
+            _ => Err(io::Error::new(io::ErrorKind::InvalidData, format!("{} is damaged", path.display()))),
         }
     }
 
