@@ -69,6 +69,11 @@ pub fn forget() -> io::Result<bool> {
     store().lock()?.forget_peer()
 }
 
+/// Whether this Mac has never started a pairing (nor forgotten one): a first run.
+pub fn never_paired() -> bool {
+    store().lock().is_ok_and(|l| l.generation().is_none())
+}
+
 /// Whether the PC with this key is still the paired one.
 pub fn still_paired(public: &[u8; 32]) -> bool {
     store().peer().is_some_and(|p| &p.public == public)

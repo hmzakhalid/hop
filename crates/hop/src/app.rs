@@ -21,7 +21,7 @@ use objc2_app_kit::{
     NSStatusBar, NSStatusItem, NSTextField, NSVariableStatusItemLength, NSView, NSWorkspace,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL};
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -137,8 +137,9 @@ fn start_live(shared: &Shared) {
     match Live::start(shared.signals, false) {
         Ok(live) => {
             let _ = shared.live.set(live);
-            // First run: go straight to pairing instead of leaving people to find the menu.
-            if pc::store().peer().is_none() {
+            // A Mac that has never paired goes straight to pairing, rather than leaving people to
+            // find the menu. (After a Forget, it waits to be asked.)
+            if pc::never_paired() {
                 search_then_pair();
             }
         }
@@ -508,15 +509,37 @@ fn open_url(url: &str) {
     }
 }
 
-/// Search the network (off the main thread), then ask which PC and for its code.
+thread_local! {
+    /// A pairing dialog is up, or about to be (main thread).
+    static PAIRING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Pair with a PC: search the network (off the main thread), then ask which PC and for its
+/// code. Main thread. Does nothing while a pairing is already under way.
 fn search_then_pair() {
+    if !PAIRING.with(|p| p.replace(true)) {
+        search();
+    }
+}
+
+fn search() {
     std::thread::spawn(|| {
         let found = pc::discover();
-        macos::on_main(move || ask_to_pair(found));
+        macos::on_main(move || match ask_for_code(found) {
+            Choice::Pair(addr, code) => pair(addr, code),
+            Choice::SearchAgain => search(),
+            Choice::Cancel => PAIRING.with(|p| p.set(false)),
+        });
     });
 }
 
-fn ask_to_pair(found: Result<Vec<Found>, String>) {
+enum Choice {
+    Pair(SocketAddr, String),
+    SearchAgain,
+    Cancel,
+}
+
+fn ask_for_code(found: Result<Vec<Found>, String>) -> Choice {
     let mtm = MainThreadMarker::new().unwrap();
     let found = match found {
         Ok(f) if !f.is_empty() => f,
@@ -524,10 +547,7 @@ fn ask_to_pair(found: Result<Vec<Found>, String>) {
             let why = other.err().unwrap_or_else(|| {
                 "Install Hop on your Windows PC, on the same network as this Mac. Then, on the PC, open the Hop icon in the taskbar and choose \"Pair a Mac\".".into()
             });
-            if show_alert(mtm, "No PC found", &why, &["Search Again", "Cancel"], None) == 0 {
-                search_then_pair();
-            }
-            return;
+            return if show_alert(mtm, "No PC found", &why, &["Search Again", "Cancel"], None) == 0 { Choice::SearchAgain } else { Choice::Cancel };
         }
     };
     let width = 260.0;
@@ -542,10 +562,13 @@ fn ask_to_pair(found: Result<Vec<Found>, String>) {
     view.addSubview(&field);
     let info = "On the PC, open the Hop icon in the taskbar and choose \"Pair a Mac\", then type the code it shows.";
     if show_alert(mtm, "Pair with a PC", info, &["Pair", "Cancel"], Some(&view)) != 0 {
-        return;
+        return Choice::Cancel;
     }
     let pick = popup.indexOfSelectedItem().clamp(0, found.len() as isize - 1) as usize;
-    let (addr, code) = (found[pick].addr, field.stringValue().to_string());
+    Choice::Pair(found[pick].addr, field.stringValue().to_string())
+}
+
+fn pair(addr: SocketAddr, code: String) {
     std::thread::spawn(move || {
         let r = pc::pair_with(addr, &code);
         macos::on_main(move || {
@@ -557,10 +580,11 @@ fn ask_to_pair(found: Result<Vec<Found>, String>) {
                 }
                 Err(e) => {
                     if show_alert(mtm, "Pairing did not work", &e, &["Try Again", "Cancel"], None) == 0 {
-                        search_then_pair();
+                        return search();
                     }
                 }
             }
+            PAIRING.with(|p| p.set(false));
         });
     });
 }
