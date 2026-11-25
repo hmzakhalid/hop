@@ -78,26 +78,28 @@ fn spawn_pairing(
 ) {
     std::thread::spawn(move || {
         let failed = |why: String| events(AgentEvent::PairingFailed(why));
-        if let Some(p) = accept_pairing(&listener, &window, &keys, &name, &stop, &failed) {
+        let result = accept_pairing(&listener, &window, &keys, &name, &stop, &failed);
+        drop(listener); // the port is free again before anyone hears about the pairing
+        if let Some(p) = result {
             *paired.lock().unwrap() = Some(p.public);
             events(AgentEvent::Paired(p));
         }
     });
 }
 
-/// Pair once, without running the agent: listen on `bind` (TCP) until a Mac pairs with the code,
-/// the window closes, or `stop`. For pairing while the Windows service runs the agent: it holds
-/// the UDP port but never the TCP one.
+/// Pair once, without running the agent: accept on `listener` (TCP) until a Mac pairs with the
+/// code, the window closes, or `stop`. For pairing while the Windows service runs the agent: it
+/// holds the UDP port but never the TCP one. The caller binds first, so it can report a busy
+/// port before showing a code.
 pub fn pair(
-    bind: SocketAddr,
+    listener: TcpListener,
     window: &PairingWindow,
     keys: &StaticKeys,
     name: &str,
     stop: &AtomicBool,
     failed: impl Fn(String),
-) -> io::Result<Option<Paired>> {
-    let listener = TcpListener::bind(bind)?;
-    Ok(accept_pairing(&listener, window, keys, name, stop, &failed))
+) -> Option<Paired> {
+    accept_pairing(&listener, window, keys, name, stop, &failed)
 }
 
 fn accept_pairing(
@@ -117,14 +119,15 @@ fn accept_pairing(
     while !stop.load(Ordering::Relaxed) && Instant::now() < window.until && failures < PAIRING_MAX_FAILURES {
         match listener.accept() {
             Ok((mut s, _)) => {
-                // Timeouts, so a client that stalls cannot hold pairing open.
-                let limits = s.set_nonblocking(false).and_then(|_| s.set_read_timeout(Some(Duration::from_secs(10))));
-                if let Err(e) = limits.and_then(|_| s.set_write_timeout(Some(Duration::from_secs(10)))) {
+                if let Err(e) = s.set_nonblocking(false) {
                     failed(e.to_string());
                     continue;
                 }
                 let _ = s.set_nodelay(true); // latency only
-                match crypto::pair_responder(&mut s, keys, &window.code, name) {
+                // One deadline for the whole exchange, so a client that stalls or trickles
+                // cannot hold pairing open, nor finish it after the code expires.
+                let until = window.until.min(Instant::now() + crypto::PAIRING_EXCHANGE);
+                match crypto::pair_responder(&mut s, until, keys, &window.code, name) {
                     Ok(p) => return Some(p),
                     Err(e) => {
                         if e.kind() == io::ErrorKind::PermissionDenied {

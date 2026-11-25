@@ -449,28 +449,11 @@ fn pairing_alone_works_beside_a_running_agent() {
     let (pc_keys, code) = (StaticKeys::generate(), new_pairing_code());
     let pc_public = pc_keys.public;
     let window = PairingWindow::new(code.clone());
-    let pairing = thread::spawn(move || {
-        let stop = AtomicBool::new(false);
-        let t = Instant::now();
-        loop {
-            // The agent's own pairing listener closes just after its pairing; wait for the port.
-            match agent::pair(addr, &window, &pc_keys, "Service PC", &stop, |_| {}) {
-                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && t.elapsed() < Duration::from_secs(2) => {
-                    thread::sleep(Duration::from_millis(20))
-                }
-                r => return r.unwrap(),
-            }
-        }
-    });
+    // The agent's own pairing has finished, so its TCP listener is closed and the port is free.
+    let listener = std::net::TcpListener::bind(addr).expect("the agent released the pairing port");
+    let pairing = thread::spawn(move || agent::pair(listener, &window, &pc_keys, "Service PC", &AtomicBool::new(false), |_| {}));
     let new_mac = StaticKeys::generate();
-    let t = Instant::now();
-    let pc = loop {
-        match link::pair(addr, &new_mac, &code, "Second Mac") {
-            Ok(p) => break p,
-            Err(_) if t.elapsed() < Duration::from_secs(3) => thread::sleep(Duration::from_millis(20)),
-            Err(e) => panic!("{e}"),
-        }
-    };
+    let pc = link::pair(addr, &new_mac, &code, "Second Mac").unwrap();
     assert_eq!((pc.name.as_str(), pc.public), ("Service PC", pc_public));
     let mac = pairing.join().unwrap().expect("paired");
     assert_eq!((mac.name.as_str(), mac.public), ("Second Mac", new_mac.public));

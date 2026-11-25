@@ -76,9 +76,7 @@ pub fn discover(port: u16, targets: &[IpAddr], wait: Duration) -> io::Result<Vec
 pub fn pair(addr: SocketAddr, keys: &StaticKeys, code: &str, my_name: &str) -> io::Result<Paired> {
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
     s.set_nodelay(true)?;
-    s.set_read_timeout(Some(Duration::from_secs(10)))?;
-    s.set_write_timeout(Some(Duration::from_secs(10)))?;
-    crypto::pair_initiator(&mut s, keys, code, my_name)
+    crypto::pair_initiator(&mut s, Instant::now() + crypto::PAIRING_EXCHANGE, keys, code, my_name)
 }
 
 /// What [`Link::recv`] produced.

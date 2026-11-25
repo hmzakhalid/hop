@@ -11,9 +11,10 @@ use rand::{Rng, RngCore};
 use snow::{Builder, HandshakeState, StatelessTransportState};
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 pub const IK: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 pub const PAIR: &str = "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s";
@@ -295,6 +296,59 @@ pub fn ik_respond(
 
 // ---- pairing over TCP ----------------------------------------------------------------------
 
+/// Longest the code exchange may take once connected, on either end. The PC also stops at its
+/// code's expiry, whichever comes first.
+pub const PAIRING_EXCHANGE: Duration = Duration::from_secs(10);
+
+/// A TCP stream that gives up at `until`, however slowly the bytes arrive: each read or write
+/// may wait only for the time left.
+struct Bounded<'a> {
+    s: &'a mut TcpStream,
+    until: Instant,
+}
+
+fn too_long() -> io::Error {
+    err(io::ErrorKind::TimedOut, "pairing took too long")
+}
+
+impl Bounded<'_> {
+    fn left(&self) -> io::Result<Duration> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(too_long());
+        }
+        Ok(left)
+    }
+}
+
+/// A socket timeout is reported as `WouldBlock` on macOS and `TimedOut` on Windows.
+fn timed_out(e: io::Error) -> io::Error {
+    match e.kind() {
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => too_long(),
+        _ => e,
+    }
+}
+
+impl Read for Bounded<'_> {
+    fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+        let left = self.left()?;
+        self.s.set_read_timeout(Some(left))?;
+        self.s.read(b).map_err(timed_out)
+    }
+}
+
+impl Write for Bounded<'_> {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        let left = self.left()?;
+        self.s.set_write_timeout(Some(left))?;
+        self.s.write(b).map_err(timed_out)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.s.flush()
+    }
+}
+
 fn send_frame(s: &mut impl Write, b: &[u8]) -> io::Result<()> {
     let len = u16::try_from(b.len()).map_err(|_| err(io::ErrorKind::InvalidInput, "frame too big"))?;
     s.write_all(&len.to_be_bytes())?;
@@ -320,8 +374,9 @@ pub struct Paired {
     pub name: String,
 }
 
-/// Mac side of pairing. `code` is what the user typed.
-pub fn pair_initiator(s: &mut (impl Read + Write), local: &StaticKeys, code: &str, my_name: &str) -> io::Result<Paired> {
+/// Mac side of pairing, finished by `until`. `code` is what the user typed.
+pub fn pair_initiator(s: &mut TcpStream, until: Instant, local: &StaticKeys, code: &str, my_name: &str) -> io::Result<Paired> {
+    let s = &mut Bounded { s, until };
     let code = normalize_code(code).ok_or_else(|| err(io::ErrorKind::InvalidInput, "a code is 12 letters or digits"))?;
     let psk = psk_from_code(&code);
     let mut hs = pair_builder(local, &psk).and_then(|b| b.build_initiator()).map_err(noise_err)?;
@@ -356,8 +411,10 @@ pub fn pair_initiator(s: &mut (impl Read + Write), local: &StaticKeys, code: &st
     Ok(Paired { public: pc_key, name: pc_name })
 }
 
-/// PC side of pairing. Fails with `PermissionDenied` when the Mac used a different code.
-pub fn pair_responder(s: &mut (impl Read + Write), local: &StaticKeys, code: &str, my_name: &str) -> io::Result<Paired> {
+/// PC side of pairing, finished by `until` (no confirmation is sent after it). Fails with
+/// `PermissionDenied` when the Mac used a different code.
+pub fn pair_responder(s: &mut TcpStream, until: Instant, local: &StaticKeys, code: &str, my_name: &str) -> io::Result<Paired> {
+    let s = &mut Bounded { s, until };
     let code = normalize_code(code).ok_or_else(|| err(io::ErrorKind::InvalidInput, "bad code"))?;
     let psk = psk_from_code(&code);
     let mut hs = pair_builder(local, &psk).and_then(|b| b.build_responder()).map_err(noise_err)?;
@@ -474,10 +531,10 @@ mod tests {
         let pc_code = pc_code.to_string();
         let t = std::thread::spawn(move || {
             let (mut s, _) = l.accept().unwrap();
-            pair_responder(&mut s, &pc2, &pc_code, "Desk PC")
+            pair_responder(&mut s, Instant::now() + PAIRING_EXCHANGE, &pc2, &pc_code, "Desk PC")
         });
         let mut s = TcpStream::connect(addr).unwrap();
-        let m = pair_initiator(&mut s, &mac, mac_code, "MacBook");
+        let m = pair_initiator(&mut s, Instant::now() + PAIRING_EXCHANGE, &mac, mac_code, "MacBook");
         drop(s);
         (m, t.join().unwrap(), mac, pc)
     }
@@ -489,6 +546,30 @@ mod tests {
         let (m, p) = (m.unwrap(), p.unwrap());
         assert_eq!(m, Paired { public: pc.public, name: "Desk PC".into() });
         assert_eq!(p, Paired { public: mac.public, name: "MacBook".into() });
+    }
+
+    #[test]
+    fn a_trickling_client_cannot_hold_pairing_past_its_deadline() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            // Announce the largest frame, then send it one byte at a time.
+            let _ = c.write_all(&[0xff, 0xff]);
+            for _ in 0..30 {
+                std::thread::sleep(Duration::from_millis(50));
+                if c.write_all(&[0]).is_err() {
+                    break;
+                }
+            }
+        });
+        let (mut s, _) = l.accept().unwrap();
+        let t = Instant::now();
+        let r = pair_responder(&mut s, Instant::now() + Duration::from_millis(300), &StaticKeys::generate(), &new_pairing_code(), "PC");
+        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(t.elapsed() < Duration::from_millis(900), "gave up after {:?}", t.elapsed());
+        drop(s);
+        client.join().unwrap();
     }
 
     #[test]

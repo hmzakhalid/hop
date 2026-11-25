@@ -318,14 +318,13 @@ pub fn pair_beside_service(name: Option<String>, port: u16) -> Result<(), String
     }
     let keys = store.keys().map_err(|e| format!("cannot read the service's key in {}: {e}", store.dir.display()))?;
     let name = name.unwrap_or_else(computer_name);
+    let listener = std::net::TcpListener::bind(std::net::SocketAddr::from(([0, 0, 0, 0], port)))
+        .map_err(|e| format!("cannot listen for pairing on port {port}: {e}"))?;
     let code = new_pairing_code();
     println!("{}", pairing_banner(&code));
     let stop = Arc::new(AtomicBool::new(false));
     crate::platform::on_ctrl_c(stop.clone());
-    let paired = agent::pair(([0, 0, 0, 0], port).into(), &PairingWindow::new(code), &keys, &name, &stop, |why| {
-        println!("Pairing attempt failed: {why}")
-    })
-    .map_err(|e| format!("cannot listen for pairing on port {port}: {e}"))?;
+    let paired = agent::pair(listener, &PairingWindow::new(code), &keys, &name, &stop, |why| println!("Pairing attempt failed: {why}"));
     let Some(p) = paired else { return Err("no Mac paired before the code expired".into()) };
     store.save_peer(&MacRecord { public: p.public, name: p.name.clone() }).map_err(|e| format!("paired, but saving failed: {e}"))?;
     println!("Paired with {} (key {}).", p.name, fingerprint(&p.public));
