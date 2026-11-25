@@ -145,6 +145,53 @@ pub struct Ack {
     pub monitors: Vec<Monitor>,
 }
 
+/// Mac → PC: keep streaming (or stop), and how it is going.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Want {
+    pub watch: bool,
+    /// The decoder lost its reference: send a keyframe.
+    pub keyframe: bool,
+    /// The Mac's clock, echoed in `VideoClock` to estimate the offset between the clocks.
+    pub mac_time_us: u64,
+    /// Frames shown and frames lost so far. The PC does not use them; they stay because Hop
+    /// 1.0.0 sends them (see the pinned wire format).
+    pub complete: u32,
+    pub lost: u32,
+    /// How long the first packet of recent frames took from the PC's encoder to the Mac, smoothed;
+    /// 0 when unknown. The PC's rate control watches it. The first packet, because a frame's later
+    /// packets wait behind its own earlier ones, which says nothing about congestion; and after the
+    /// encoder, because encode time varies with content.
+    pub delay_us: u32,
+}
+
+/// [`Frag::flags`]: the frame is a keyframe.
+pub const FRAG_KEYFRAME: u8 = 1;
+/// [`Frag::flags`]: the frame is HEVC (H.265), not H.264.
+pub const FRAG_HEVC: u8 = 4;
+/// A [`Msg::VideoFrag`]'s encoded size before its data.
+pub const FRAG_HEADER: usize = 29;
+
+/// PC → Mac: one shard of one FEC block of one encoded frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Frag {
+    pub frame: u32,
+    /// The whole frame's length in bytes.
+    pub len: u32,
+    pub block: u8,
+    pub blocks: u8,
+    /// Data shards come first (`0..data_shards`), then parity.
+    pub shard: u8,
+    pub data_shards: u8,
+    pub parity_shards: u8,
+    /// [`FRAG_KEYFRAME`], [`FRAG_HEVC`].
+    pub flags: u8,
+    /// When the PC grabbed the image, on the PC's clock.
+    pub captured_us: u64,
+    /// How long the PC held the frame before sending it (see [`crate::video::Encoded::pc_us`]).
+    pub pc_us: u32,
+    pub data: Vec<u8>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Msg {
     State(State),
@@ -152,8 +199,8 @@ pub enum Msg {
     Ping { t: u64 },
     Pong { t: u64 },
     /// Screen view, on the video channel: see [`crate::video`].
-    VideoWant(crate::video::Want),
-    VideoFrag(crate::video::Frag),
+    VideoWant(Want),
+    VideoFrag(Frag),
     /// Echo of a `VideoWant`, for the clock offset, with the PC's current bitrate.
     VideoClock { mac_time_us: u64, pc_time_us: u64, bitrate: u32 },
     /// The PC pointer moved (pixels of the streamed monitor), or was hidden. Sent the moment it
@@ -433,7 +480,7 @@ impl Msg {
             MSG_PONG => Msg::Pong { t: r.u64()? },
             MSG_VIDEO_WANT => {
                 let bits = r.u8()?;
-                Msg::VideoWant(crate::video::Want {
+                Msg::VideoWant(Want {
                     watch: bits & 1 != 0,
                     keyframe: bits & 2 != 0,
                     mac_time_us: r.u64()?,
@@ -448,7 +495,7 @@ impl Msg {
                 let (captured_us, pc_us) = (r.u64()?, r.u32()?);
                 let n = r.u16()? as usize;
                 let data = r.take(n)?.to_vec();
-                Msg::VideoFrag(crate::video::Frag {
+                Msg::VideoFrag(Frag {
                     frame,
                     len,
                     block,
@@ -578,8 +625,8 @@ mod tests {
             cursor_y: 20,
             monitors: vec![Monitor { left: -1920, top: 0, right: 2560, bottom: 1440, scale_milli: 1250 }],
         };
-        let want = crate::video::Want { watch: true, keyframe: true, mac_time_us: 77, complete: 5, lost: 1, delay_us: 4321 };
-        let frag = crate::video::Frag {
+        let want = Want { watch: true, keyframe: true, mac_time_us: 77, complete: 5, lost: 1, delay_us: 4321 };
+        let frag = Frag {
             frame: 9,
             len: 3,
             block: 0,
@@ -609,6 +656,10 @@ mod tests {
             .map(|(name, m)| {
                 let mut b = Vec::new();
                 m.encode(&mut b);
+                assert_eq!(Msg::decode(&b), Some(m.clone()), "{name} decodes to itself");
+                if let Msg::VideoFrag(f) = &m {
+                    assert_eq!(b.len(), FRAG_HEADER + f.data.len(), "FRAG_HEADER is a fragment's size before its data");
+                }
                 (name, b)
             })
             .collect();

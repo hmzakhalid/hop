@@ -1,7 +1,8 @@
 //! The screen as a frame [`Source`] for the video channel.
 
 use crate::capture::{Capturer, Settings};
-use hop_core::stream::{Encoded, Polled, Source};
+use hop_core::stream::{Polled, Source};
+use hop_core::video::Encoded;
 use std::io;
 
 pub struct ScreenSource {

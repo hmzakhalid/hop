@@ -3,8 +3,8 @@
 
 use hop_core::clock::now_us;
 use hop_core::crypto::StaticKeys;
-use hop_core::stream::{self, Client, Encoded, Polled, Received, Source};
-use hop_core::video::{self, Frame};
+use hop_core::stream::{self, Client, Polled, Received, Source};
+use hop_core::video::{self, Encoded, Frame};
 use hop_core::wire::MAX_PACKET;
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
@@ -52,10 +52,11 @@ fn pattern(n: u32, len: usize) -> Vec<u8> {
 }
 
 fn intact(f: &Frame) -> bool {
-    f.data.len() >= 8 && {
-        let n = u32::from_le_bytes(f.data[0..4].try_into().unwrap());
-        let len = u32::from_le_bytes(f.data[4..8].try_into().unwrap()) as usize;
-        len == f.data.len() && f.data == pattern(n, len)
+    let data = &f.encoded.data;
+    data.len() >= 8 && {
+        let n = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        let len = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+        len == data.len() && *data == pattern(n, len)
     }
 }
 
@@ -184,7 +185,7 @@ fn the_picture_comes_back_after_the_pc_restarts() {
     // Reconnecting takes about a second (the restart hint is believed after one second of
     // silence); the rest of the time should be picture.
     assert!(after.len() > 60, "only {} frames after the restart", after.len());
-    assert!(after[0].keyframe, "the new stream starts from a keyframe");
+    assert!(after[0].encoded.keyframe, "the new stream starts from a keyframe");
     assert!(after.iter().all(intact));
     // The new process numbers its cursor updates from 1 again; they must not read as old.
     assert!(cursors.len() > 30, "only {} cursor moves after the restart", cursors.len());
@@ -197,7 +198,7 @@ fn frames_arrive_intact_and_in_order() {
     // 1.5 s at the 60 fps cap is about 90 frames.
     assert!(frames.len() > 60, "only {} frames", frames.len());
     assert!(frames.len() <= 100, "the 60 fps cap holds: {} frames", frames.len());
-    assert!(frames[0].keyframe, "a viewer starts from a keyframe");
+    assert!(frames[0].encoded.keyframe, "a viewer starts from a keyframe");
     assert!(frames.iter().all(intact), "every frame intact");
     assert!(frames.windows(2).all(|w| w[1].id > w[0].id), "in order");
     assert_eq!(client.counts().1, 0, "nothing lost on a clean link");
@@ -212,7 +213,7 @@ fn frames_arrive_intact_and_in_order() {
         }
         if let Some(Received::Frame(f)) = client.recv().unwrap() {
             ages.extend(client.age_us(&f));
-            true_ages.push(now_us() - f.captured_us); // one process, one clock
+            true_ages.push(now_us() - f.encoded.captured_us); // one process, one clock
         }
     }
     ages.sort();
@@ -232,14 +233,14 @@ fn loss_recovers_through_keyframes_and_never_shows_a_broken_frame() {
     let (_pc, client, stop) = setup(5);
     let frames = watch(&client, Duration::from_millis(2500));
     let (complete, lost, repaired) = client.counts();
-    eprintln!("5% loss: {complete} frames shown, {lost} lost, {repaired} shards rebuilt, {} keyframes", frames.iter().filter(|f| f.keyframe).count());
+    eprintln!("5% loss: {complete} frames shown, {lost} lost, {repaired} shards rebuilt, {} keyframes", frames.iter().filter(|f| f.encoded.keyframe).count());
     assert!(repaired > 0, "the proxy did drop video, and parity absorbed it");
     assert!(lost * 20 < complete, "almost nothing lost: {lost} of {complete}");
     assert!(frames.iter().all(intact), "no corrupted frame reaches the decoder");
     assert!(frames.len() > 100, "the stream keeps flowing: only {} frames in 2.5 s", frames.len());
     // After every gap in frame numbers comes a keyframe.
     for w in frames.windows(2) {
-        assert!(w[1].id == w[0].id + 1 || w[1].keyframe, "frame {} follows {} without a keyframe", w[1].id, w[0].id);
+        assert!(w[1].id == w[0].id + 1 || w[1].encoded.keyframe, "frame {} follows {} without a keyframe", w[1].id, w[0].id);
     }
     stop.unwrap().store(true, Ordering::Relaxed);
 }
@@ -279,7 +280,7 @@ fn a_still_screen_does_not_raise_the_bitrate() {
 fn the_cursor_moves_between_frames() {
     let (_pc, client, _) = setup(0);
     let (frames, cursors) = watch_all(&client, Duration::from_millis(1000));
-    assert!(frames.iter().all(|f| f.hevc), "the codec flag crosses the network");
+    assert!(frames.iter().all(|f| f.encoded.hevc), "the codec flag crosses the network");
     // The pointer is followed every poll (about every 2 ms here), far more often than frames go
     // out at 60 fps.
     assert!(cursors.len() > frames.len() * 2, "{} cursor moves for {} frames", cursors.len(), frames.len());

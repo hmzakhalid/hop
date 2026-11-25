@@ -10,6 +10,7 @@
 //! asks for one (see [`Reassembler`]). Reed–Solomon parity in every frame absorbs most losses
 //! before it comes to that.
 
+use crate::wire::{Frag, FRAG_HEVC, FRAG_KEYFRAME};
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
 /// The video channel's UDP port is the input port plus this.
@@ -17,6 +18,7 @@ pub const PORT_OFFSET: u16 = 1;
 /// Frame bytes per fragment. With its header and encryption a fragment is about 1.25 KB, under
 /// any common path MTU.
 pub const FRAG_DATA: usize = 1200;
+const _: () = assert!(crate::wire::FRAG_HEADER + FRAG_DATA + crate::crypto::DATA_OVERHEAD <= crate::wire::MAX_PACKET);
 /// The Mac repeats its request this often while watching.
 pub const WANT_EVERY_US: u64 = 100_000;
 /// The PC stops streaming this long after the last request.
@@ -27,64 +29,32 @@ pub const IDLE_RELEASE_US: u64 = 5_000_000;
 /// them on a lossy link would only make things worse.
 pub const KEYFRAME_SPACING_US: u64 = 250_000;
 
-pub const FLAG_KEYFRAME: u8 = 1;
-/// The frame is HEVC (H.265), not H.264.
-pub const FLAG_HEVC: u8 = 4;
-
-/// Mac → PC: keep streaming (or stop), and how it is going.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Want {
-    pub watch: bool,
-    /// The decoder lost its reference: send a keyframe.
-    pub keyframe: bool,
-    /// The Mac's clock, echoed in `VideoClock` to estimate the offset between the clocks.
-    pub mac_time_us: u64,
-    /// Frames shown and frames lost so far.
-    pub complete: u32,
-    pub lost: u32,
-    /// How long the first packet of recent frames took from the PC's encoder to the Mac, smoothed;
-    /// 0 when unknown. The PC's rate control watches it. The first packet, because a frame's later
-    /// packets wait behind its own earlier ones, which says nothing about congestion; and after the
-    /// encoder, because encode time varies with content.
-    pub delay_us: u32,
-}
-
 /// Data shards per FEC block at most (the code works on at most 256 shards per block).
 pub const BLOCK_DATA: usize = 100;
 /// Parity shards per block, as a share of its data shards (at least one). Any set of as many
 /// shards as there are data shards rebuilds the block, so up to this share can be lost.
 pub const PARITY_RATIO: f32 = 0.25;
 
-/// PC → Mac: one shard of one FEC block of one encoded frame.
+/// One encoded screen image (Annex B), as the PC's encoder produced it and the Mac's decoder
+/// takes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Frag {
-    pub frame: u32,
-    /// The whole frame's length in bytes.
-    pub len: u32,
-    pub block: u8,
-    pub blocks: u8,
-    /// Data shards come first (`0..data_shards`), then parity.
-    pub shard: u8,
-    pub data_shards: u8,
-    pub parity_shards: u8,
-    pub flags: u8,
-    /// When the PC grabbed the image, on the PC's clock.
-    pub captured_us: u64,
-    /// How long the PC held the frame before sending it (see [`crate::stream::Encoded::pc_us`]).
-    pub pc_us: u32,
-    pub data: Vec<u8>,
-}
-
-/// A complete encoded frame (H.264 Annex B) with what the viewer needs to show it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Frame {
-    pub id: u32,
+pub struct Encoded {
     pub data: Vec<u8>,
     pub keyframe: bool,
     /// HEVC (H.265) rather than H.264.
     pub hevc: bool,
+    /// When the image was grabbed, on the PC's [`crate::clock::now_us`] clock.
     pub captured_us: u64,
+    /// How long the PC held it before it was ready to send: waiting for its frame slot,
+    /// converting, encoding.
     pub pc_us: u32,
+}
+
+/// An [`Encoded`] image numbered for the trip: frame ids are consecutive, so a gap is a loss.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Frame {
+    pub id: u32,
+    pub encoded: Encoded,
 }
 
 /// Reed–Solomon codecs by shape, built once each (building one inverts a matrix).
@@ -125,15 +95,16 @@ pub struct Fragmenter {
 
 impl Fragmenter {
     pub fn split(&mut self, f: &Frame) -> Vec<Frag> {
-        let len = f.data.len();
+        let (id, e) = (f.id, &f.encoded);
+        let len = e.data.len();
         let blocks = len.div_ceil(BLOCK_DATA * FRAG_DATA).max(1);
-        let mut flags = if f.keyframe { FLAG_KEYFRAME } else { 0 };
-        if f.hevc {
-            flags |= FLAG_HEVC;
+        let mut flags = if e.keyframe { FRAG_KEYFRAME } else { 0 };
+        if e.hevc {
+            flags |= FRAG_HEVC;
         }
         let mut out = Vec::new();
         for b in 0..blocks {
-            let bytes = &f.data[block_range(len, b)];
+            let bytes = &e.data[block_range(len, b)];
             let (k, size) = block_shape(bytes.len());
             let m = parity_for(k);
             let mut shards: Vec<Vec<u8>> = (0..k)
@@ -148,7 +119,7 @@ impl Fragmenter {
             codec.encode(&mut shards).expect("shards have equal sizes");
             for (i, data) in shards.into_iter().enumerate() {
                 out.push(Frag {
-                    frame: f.id,
+                    frame: id,
                     len: len as u32,
                     block: b as u8,
                     blocks: blocks as u8,
@@ -156,8 +127,8 @@ impl Fragmenter {
                     data_shards: k as u8,
                     parity_shards: m as u8,
                     flags,
-                    captured_us: f.captured_us,
-                    pc_us: f.pc_us,
+                    captured_us: e.captured_us,
+                    pc_us: e.pc_us,
                     data,
                 });
             }
@@ -293,7 +264,7 @@ impl Reassembler {
 
     fn finish(&mut self, p: Partial) -> Option<Frame> {
         let id = p.first.frame;
-        let keyframe = p.first.flags & FLAG_KEYFRAME != 0;
+        let keyframe = p.first.flags & FRAG_KEYFRAME != 0;
         // Anything skipped between the last frame and this one was lost entirely.
         if let Some(l) = self.last {
             if id.wrapping_sub(l) > 1 {
@@ -311,11 +282,13 @@ impl Reassembler {
         self.complete += 1;
         Some(Frame {
             id,
-            data: p.blocks.into_iter().flat_map(|b| b.data.unwrap_or_default()).collect(),
-            keyframe,
-            hevc: p.first.flags & FLAG_HEVC != 0,
-            captured_us: p.first.captured_us,
-            pc_us: p.first.pc_us,
+            encoded: Encoded {
+                data: p.blocks.into_iter().flat_map(|b| b.data.unwrap_or_default()).collect(),
+                keyframe,
+                hevc: p.first.flags & FRAG_HEVC != 0,
+                captured_us: p.first.captured_us,
+                pc_us: p.first.pc_us,
+            },
         })
     }
 
@@ -445,7 +418,8 @@ mod tests {
     use super::*;
 
     fn frame(id: u32, len: usize, keyframe: bool) -> Frame {
-        Frame { id, data: (0..len).map(|i| (i * 7 + id as usize) as u8).collect(), keyframe, hevc: id.is_multiple_of(2), captured_us: 5, pc_us: 2 }
+        let data = (0..len).map(|i| (i * 7 + id as usize) as u8).collect();
+        Frame { id, encoded: Encoded { data, keyframe, hevc: id.is_multiple_of(2), captured_us: 5, pc_us: 2 } }
     }
 
     fn split(f: &Frame) -> Vec<Frag> {
@@ -609,20 +583,5 @@ mod tests {
         c.sample(1_000, 51_000, 1_000 + 20_000); // slow: suggests offset 40 000
         c.sample(2_000, 52_500, 3_000); // fast: offset 50 000
         assert_eq!(c.to_mac(60_000), Some(10_000));
-    }
-
-    #[test]
-    fn video_messages_round_trip() {
-        use crate::wire::Msg;
-        let f = split(&frame(9, 1500, true)).remove(1);
-        let want = Want { watch: true, keyframe: true, mac_time_us: 77, complete: 5, lost: 1, delay_us: 9 };
-        let cursor = Msg::VideoCursor { seq: 7, at: Some((-5, 900)) };
-        let note = Msg::VideoNote("cannot capture: access denied".into());
-        for m in [Msg::VideoFrag(f), Msg::VideoWant(want), Msg::VideoClock { mac_time_us: 1, pc_time_us: 2, bitrate: 3 }, cursor, note] {
-            let mut b = Vec::new();
-            m.encode(&mut b);
-            assert!(b.len() + crate::crypto::DATA_OVERHEAD <= crate::wire::MAX_PACKET, "{} bytes", b.len());
-            assert_eq!(Msg::decode(&b), Some(m));
-        }
     }
 }

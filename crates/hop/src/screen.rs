@@ -126,21 +126,22 @@ fn run(viewer: Viewer, target: Target, mut decoder: view::Decoder, live: Option<
         };
         match received {
             Some(Received::Frame(frame)) => {
-                if frame.keyframe {
-                    if let Some(dims) = view::dimensions(&frame.data, frame.hevc).filter(|d| Some(*d) != size) {
+                let image = &frame.encoded;
+                if image.keyframe {
+                    if let Some(dims) = view::dimensions(&image.data, image.hevc).filter(|d| Some(*d) != size) {
                         size = Some(dims);
                         viewer.with_window(move |w| w.set_picture_size(dims.0, dims.1));
                     }
                 }
                 let t = Instant::now();
-                let pushed = decoder.push(&frame.data, frame.hevc);
+                let pushed = decoder.push(&image.data, image.hevc);
                 if pushed == Pushed::NeedKeyframe {
                     decoder.reset();
                     client.decoder_failed();
                     continue;
                 }
                 stats.shown(&frame, client.age_us(&frame), t.elapsed());
-                (note, hevc) = (None, frame.hevc);
+                (note, hevc) = (None, image.hevc);
             }
             Some(Received::Cursor(at)) => show_cursor(&viewer, &local_cursor, at),
             Some(Received::Note(text)) => {
@@ -200,8 +201,8 @@ impl Stats {
             (self.age_sum, self.age_n) = (self.age_sum + a, self.age_n + 1);
         }
         self.push_us += push.as_micros() as u64;
-        self.pc_us += f.pc_us as u64;
-        self.pc_max = self.pc_max.max(f.pc_us);
+        self.pc_us += f.encoded.pc_us as u64;
+        self.pc_max = self.pc_max.max(f.encoded.pc_us);
     }
 
     fn line(&self, name: &str, size: Option<(u32, u32)>, hevc: bool, client: &Client) -> String {

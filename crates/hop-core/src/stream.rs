@@ -5,26 +5,14 @@ use crate::clock::now_us;
 use crate::crypto::StaticKeys;
 use crate::link::{Event, Link};
 use crate::responder::{Datagram, Responder};
-use crate::video::{self, ClockOffset, Fragmenter, Frame, RateControl, Reassembler, Want};
+use crate::video::{self, ClockOffset, Encoded, Fragmenter, Frame, RateControl, Reassembler};
+use crate::wire::Want;
 use crate::wire::{Msg, MAX_PACKET};
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-/// One encoded screen image, from a [`Source`].
-pub struct Encoded {
-    pub data: Vec<u8>,
-    pub keyframe: bool,
-    /// HEVC (H.265) rather than H.264.
-    pub hevc: bool,
-    /// When the image was grabbed, on [`now_us`]'s clock.
-    pub captured_us: u64,
-    /// How long the PC held it before it was ready to send: waiting for its frame slot,
-    /// converting, encoding.
-    pub pc_us: u32,
-}
 
 /// What [`Source::poll`] saw.
 pub struct Polled {
@@ -216,7 +204,7 @@ pub fn serve(
                 last_key = now;
             }
             frame_id = frame_id.wrapping_add(1);
-            let frame = Frame { id: frame_id, data: e.data, keyframe: e.keyframe, hevc: e.hevc, captured_us: e.captured_us, pc_us: e.pc_us };
+            let frame = Frame { id: frame_id, encoded: e };
             for f in fragmenter.split(&frame) {
                 responder.send(&sock, &Msg::VideoFrag(f));
             }
@@ -310,7 +298,7 @@ impl Client {
                     let frame = r.push(f);
                     (frame, r.wants_keyframe())
                 };
-                let captured = frame.as_ref().and_then(|f| Some((self.clock.lock().unwrap().to_mac(f.captured_us)?, f.pc_us)));
+                let captured = frame.as_ref().and_then(|f| Some((self.clock.lock().unwrap().to_mac(f.encoded.captured_us)?, f.encoded.pc_us)));
                 if let Some((captured_mac, pc_us)) = captured {
                     let transit = first_arrival.saturating_sub(captured_mac).saturating_sub(pc_us as u64).max(1);
                     let d = self.delay.load(Ordering::Relaxed);
@@ -356,7 +344,7 @@ impl Client {
 
     /// How long ago (µs) the PC grabbed this frame, once the clocks are matched.
     pub fn age_us(&self, f: &Frame) -> Option<u64> {
-        self.clock.lock().unwrap().to_mac(f.captured_us).map(|t| now_us().saturating_sub(t))
+        self.clock.lock().unwrap().to_mac(f.encoded.captured_us).map(|t| now_us().saturating_sub(t))
     }
 
     /// How long since anything authentic came from the PC. It answers every request, so a
