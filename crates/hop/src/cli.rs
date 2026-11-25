@@ -26,7 +26,7 @@ Run options:
   --cmd-as-win           ⌘ is the Windows key and ⌃ is Ctrl (default: ⌘ is Ctrl, ⌃ is Win)
   --no-chords            do not translate ⌘Tab, ⌥←, ⌘Q, …
   --verbose              print crossings and link status
-  --stats                print round trip, memory and CPU every 5 seconds
+  --stats                print round trip, memory and CPU every {stats} seconds
 
 While the PC has the keyboard and mouse, a blue badge at the top of the Mac's screen says so.
 Keys on the PC: ⌘ = Ctrl, ⌥ = Alt, ⌃ = Windows key (⌃L is Win+L). ⌘Space opens Start.
@@ -38,7 +38,7 @@ pub fn usage() -> String {
     } else {
         ""
     };
-    format!("{USAGE}{dev}")
+    format!("{USAGE}{dev}").replace("{stats}", &crate::run::STATS_EVERY.as_secs().to_string())
 }
 
 pub struct RunOptions {
@@ -156,12 +156,16 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, ParseErr
     }
     let name = WORDS.iter().find(|(_, w)| *w == word).map_or("run", |(n, _)| n);
     let only = |ok: bool, what: &str| if ok { Ok(()) } else { Err(format!("`hop {name}` does not take {what}")) };
-    only(name == "bench" || count.is_none(), "--count")?;
     #[cfg(feature = "dev-tools")]
-    only(name == "view" || file.is_none(), "--file")?;
-    only(name == "run" || !run_flags, "run options")?;
-    only(matches!(name, "run" | "badge") || !side_given, "--side")?;
-    only(!matches!(name, "app" | "unpair" | "badge") || host.is_none(), "--host")?;
+    let badge = word == Word::Badge;
+    #[cfg(not(feature = "dev-tools"))]
+    let badge = false;
+    only(word == Word::Bench || count.is_none(), "--count")?;
+    #[cfg(feature = "dev-tools")]
+    only(word == Word::View || file.is_none(), "--file")?;
+    only(word == Word::Run || !run_flags, "run options")?;
+    only(word == Word::Run || badge || !side_given, "--side")?;
+    only(!(matches!(word, Word::App | Word::Unpair) || badge) || host.is_none(), "--host")?;
     Ok(match word {
         Word::App => Command::App,
         Word::Run => Command::Run { host, opts: run },

@@ -76,10 +76,9 @@ fn spawn_pairing(
     stop: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
-        let failed = |why: String| events(AgentEvent::PairingFailed(why));
-        let result = accept_pairing(&listener, &window, &keys, &name, &stop, &failed);
-        drop(listener); // the port is free again before anyone hears about the pairing
-        if let Some(p) = result {
+        // `pair` closes the listener before it returns: the port is free again before anyone
+        // hears about the pairing.
+        if let Some(p) = pair(listener, &window, &keys, &name, &stop, |why| events(AgentEvent::PairingFailed(why))) {
             *paired.lock().unwrap() = Some(p.public);
             events(AgentEvent::Paired(p));
         }
@@ -89,26 +88,14 @@ fn spawn_pairing(
 /// Pair once, without running the agent: accept on `listener` (TCP) until a Mac pairs with the
 /// code, the window closes, or `stop`. For pairing while the Windows service runs the agent: it
 /// holds the UDP port but never the TCP one. The caller binds first, so it can report a busy
-/// port before showing a code.
+/// port before showing a code; the listener closes when this returns.
 pub fn pair(
     listener: TcpListener,
     window: &PairingWindow,
     keys: &StaticKeys,
     name: &str,
     stop: &AtomicBool,
-    failed: impl Fn(String),
-) -> Option<Paired> {
-    accept_pairing(&listener, window, keys, name, stop, &failed)
-}
-
-fn accept_pairing(
-    listener: &TcpListener,
-    window: &PairingWindow,
-    keys: &StaticKeys,
-    name: &str,
-    stop: &AtomicBool,
-    failed: &dyn Fn(String),
-) -> Option<Paired> {
+    failed: impl Fn(String),) -> Option<Paired> {
     // Non-blocking, so the time limit holds even if nobody connects.
     if let Err(e) = listener.set_nonblocking(true) {
         failed(e.to_string());

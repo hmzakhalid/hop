@@ -17,7 +17,7 @@ Usage:
   hop-agent selftest   check input injection on this PC (nothing reaches your apps)
   hop-agent install    (as administrator) run as a Windows service, so the Mac also works on
                        the lock screen, UAC prompts and admin windows such as Task Manager;
-                       keeps the current pairing and starts with Windows
+                       starts with Windows (a first install takes this PC's pairing)
   hop-agent uninstall  (as administrator) remove the service
 
 Options:
@@ -87,18 +87,31 @@ const WORDS: [(&str, Word); 9] = [
 
 /// Parse the arguments after the program name: the command word (anywhere; `run` if none),
 /// then only the options that command takes.
+/// Options followed by a value (which is never a command word or a request for help).
+const TAKES_VALUE: [&str; 5] = ["--port", "--name", "--video-file", STOP_EVENT_FLAG, "--file"];
+
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, ParseError> {
     let mut args: Vec<String> = args.into_iter().collect();
-    if args.iter().any(|a| matches!(a.as_str(), "-h" | "--help" | "help")) {
-        return Err(ParseError::Help);
-    }
-    let word = match args.iter().position(|a| WORDS.iter().any(|(w, _)| w == a)) {
-        Some(i) => {
-            let w = args.remove(i);
-            WORDS.iter().find(|(name, _)| *name == w).unwrap().1
+    // The command word and help are found among the tokens that are not option values.
+    let mut word = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if matches!(a, "-h" | "--help" | "help") {
+            return Err(ParseError::Help);
         }
-        None => Word::Run,
-    };
+        if TAKES_VALUE.contains(&a) {
+            i += 2;
+            continue;
+        }
+        if let Some(&(_, w)) = WORDS.iter().find(|(name, _)| *name == a).filter(|_| word.is_none()) {
+            word = Some(w);
+            args.remove(i);
+            continue;
+        }
+        i += 1;
+    }
+    let word = word.unwrap_or(Word::Run);
     let name = WORDS.iter().find(|(_, w)| *w == word).map_or("run", |(n, _)| n);
     let mut opts = RunOptions {
         port: DEFAULT_PORT,
@@ -158,6 +171,7 @@ mod tests {
         for args in [
             VideoArgs { port: 47820, for_service: false, file: None },
             VideoArgs { port: 5000, for_service: true, file: Some(PathBuf::from("/tmp/a b.h264")) },
+            VideoArgs { port: 1, for_service: false, file: Some(PathBuf::from("help")) },
         ] {
             let line = args.to_args().into_iter().map(|a| a.into_string().unwrap());
             assert_eq!(parse(line), Ok(Command::Video(args)));
@@ -192,5 +206,8 @@ mod tests {
             assert!(matches!(parse_str(bad), Err(ParseError::Bad(_))), "{bad} must be refused");
         }
         assert_eq!(parse_str("pair --help"), Err(ParseError::Help));
+        assert!(matches!(parse_str("--name video"), Ok(Command::Run(_, o)) if o.name.as_deref() == Some("video")), "an option's value is not a command");
+        assert!(matches!(parse_str("--name help"), Ok(Command::Run(_, o)) if o.name.as_deref() == Some("help")));
+        assert!(matches!(parse_str("--port 5000 pair"), Ok(Command::Pair { opts, .. }) if opts.port == 5000), "the command word may come later");
     }
 }

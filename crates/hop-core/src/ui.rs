@@ -5,3 +5,5 @@
 pub const PC_PAIR_ITEM: &str = "Pair a Mac";
 /// The Mac's menu item (Hop's menu-bar icon) that pairs.
 pub const MAC_PAIR_ITEM: &str = "Pair with a PC";
+/// The switch hotkey's modifiers ([`crate::keymap::mac::HYPER`]), held with an arrow.
+pub const HOTKEY: &str = "⌃⌥⌘";

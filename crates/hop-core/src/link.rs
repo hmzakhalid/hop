@@ -80,7 +80,7 @@ pub fn discover(port: u16, targets: &[IpAddr], wait: Duration) -> io::Result<Vec
 
 /// Pair with the PC at `addr` (its UDP/TCP port) using the code it shows.
 pub fn pair(addr: SocketAddr, keys: &StaticKeys, code: &str, my_name: &str) -> Result<Paired, PairError> {
-    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).map_err(PairError::Io)?;
     let _ = s.set_nodelay(true); // latency only
     crypto::pair_initiator(&mut s, Instant::now() + crypto::PAIRING_EXCHANGE, keys, code, my_name)
 }

@@ -141,6 +141,11 @@ fn lan_address() -> Option<String> {
     Some(s.local_addr().ok()?.ip().to_string())
 }
 
+/// What both ways of pairing say when a Mac has paired.
+pub fn paired_line(p: &hop_core::crypto::Paired) -> String {
+    format!("Paired with {} (key {}).", p.name, fingerprint(&p.public))
+}
+
 /// How a pairing code is shown to the user.
 pub fn pairing_banner(code: &str) -> String {
     use hop_core::ui::MAC_PAIR_ITEM;
@@ -198,7 +203,7 @@ fn serve(role: Role, opts: RunOptions, store: AgentStore, log: &Arc<Log>) -> Res
         Some(PairingWindow::new(code))
     } else {
         if peer.is_none() {
-            log.say("Not paired. Pair once without the service (hop-agent pair), then run hop-agent install again.");
+            log.say(format!("Not paired. Choose \"{}…\" from the Hop icon in the taskbar (or run `hop-agent pair` as administrator).", hop_core::ui::PC_PAIR_ITEM));
         }
         None
     };
@@ -239,7 +244,7 @@ fn serve(role: Role, opts: RunOptions, store: AgentStore, log: &Arc<Log>) -> Res
         AgentEvent::Paired(p) => {
             let rec = MacRecord { public: p.public, name: p.name.clone() };
             match store.lock().and_then(|l| l.save_peer(&rec)) {
-                Ok(()) => ev_log.say(format!("Paired with {} (key {}).", p.name, fingerprint(&p.public))),
+                Ok(()) => ev_log.say(paired_line(&p)),
                 Err(e) => ev_log.say(format!("Paired with {}, but saving failed: {e}", p.name)),
             }
         }

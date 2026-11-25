@@ -36,15 +36,23 @@ pub struct SignalsBlocked(());
 type QuitHook = Box<dyn Fn() + Send>;
 static QUIT_HOOKS: Mutex<Vec<QuitHook>> = Mutex::new(Vec::new());
 
-/// Run `f` when the process quits, by signal or by [`quit`], after the hooks added before it.
+/// Run `f` when the process quits, by signal or by [`quit`], before the hooks added earlier
+/// (so the live engine, started last, gives the Mac its input back before anything else).
 pub fn on_quit(f: impl Fn() + Send + 'static) {
     QUIT_HOOKS.lock().unwrap().push(Box::new(f));
 }
 
-/// Quit: run the quit hooks (give the Mac its input back, save settings), then exit.
+/// Quit: run the quit hooks, newest first, then exit. Only the first caller does; a later one
+/// (a signal during a menu Quit, say) waits for it rather than exiting halfway through.
 pub fn quit() -> ! {
+    static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if QUITTING.swap(true, Ordering::SeqCst) {
+        loop {
+            std::thread::park();
+        }
+    }
     let hooks = std::mem::take(&mut *QUIT_HOOKS.lock().unwrap());
-    for hook in hooks {
+    for hook in hooks.into_iter().rev() {
         hook();
     }
     std::process::exit(0)
@@ -137,23 +145,6 @@ impl Live {
         if let Some(old) = old {
             retire(old);
         }
-    }
-
-    /// Print round trip, memory and CPU every 5 seconds.
-    pub fn print_stats(&'static self) {
-        std::thread::spawn(move || {
-            let mut last_cpu = macos::usage().1;
-            loop {
-                std::thread::sleep(Duration::from_secs(5));
-                let (memory, cpu) = macos::usage();
-                let rtt = match self.session().and_then(|s| s.read(|c| c.rtt_summary())) {
-                    Some(r) => format!("round trip p50 {:.2} ms p99 {:.2} ms ({})", r.p50, r.p99, r.count),
-                    None => "no round trips yet".into(),
-                };
-                println!("stats: {rtt} · memory {memory:.1} MB · cpu {:.2}%", (cpu - last_cpu) / 5.0 * 100.0);
-                last_cpu = cpu;
-            }
-        });
     }
 
     /// On quit: show the Mac's cursor and tell the PC to release everything, without waiting

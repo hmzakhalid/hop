@@ -15,7 +15,7 @@ use crate::scm::{open_service, service_state, wide, Missing, SERVICE_NAME};
 use crate::backoff::Backoff;
 use crate::role::{append_service_log as log_line, computer_name, pairing_banner, system_data_dir, Role, HELPER_COMMAND, STOP_EVENT_FLAG};
 use hop_core::agent::{self, PairingWindow};
-use hop_core::crypto::{fingerprint, new_pairing_code};
+use hop_core::crypto::new_pairing_code;
 use hop_core::store::{AgentStore, MacRecord};
 use std::sync::Arc;
 use std::path::{Path, PathBuf};
@@ -164,8 +164,6 @@ pub fn install(console: &AgentStore) -> Result<(), String> {
     Ok(())
 }
 
-/// Replace the firewall rule with one allowing `program`, or just remove it. True on success;
-/// an absent rule is not a failure.
 /// `s` as a single-quoted PowerShell string.
 fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
@@ -177,6 +175,8 @@ fn is_running(exe: &Path) -> bool {
     matches!((me, exe.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
+/// Replace the firewall rule with one allowing `program`, or just remove it. True on success;
+/// an absent rule is not a failure.
 fn set_firewall_rule(program: Option<&Path>) -> bool {
     let mut script = format!(
         "$r = Get-NetFirewallRule -DisplayName '{DISPLAY_NAME}' -ErrorAction SilentlyContinue; \
@@ -324,11 +324,18 @@ pub fn pair_beside_service(name: Option<String>, port: u16) -> Result<(), String
             hop_core::ui::PC_PAIR_ITEM
         ));
     }
+    if port != hop_core::wire::DEFAULT_PORT {
+        // The helper the service restarts always listens on the default port.
+        return Err(format!("the Hop service uses port {}; --port does not apply beside it", hop_core::wire::DEFAULT_PORT));
+    }
     let store = Role::Service.store();
     if !store.dir.is_dir() {
         return Err(format!("{} is missing; run hop-agent install again", store.dir.display()));
     }
     let keys = store.keys().map_err(|e| format!("cannot read the service's key in {}: {e}", store.dir.display()))?;
+    // A generation for this pairing: an Unpair (or another pairing) meanwhile replaces it, and
+    // then this one must not save.
+    let generation = store.lock().and_then(|mut l| l.new_generation()).map_err(|e| format!("{}: {e}", store.dir.display()))?;
     let name = name.unwrap_or_else(computer_name);
     let listener = std::net::TcpListener::bind(std::net::SocketAddr::from(([0, 0, 0, 0], port)))
         .map_err(|e| format!("cannot listen for pairing on port {port}: {e}"))?;
@@ -338,11 +345,13 @@ pub fn pair_beside_service(name: Option<String>, port: u16) -> Result<(), String
     crate::platform::on_ctrl_c(stop.clone());
     let paired = agent::pair(listener, &PairingWindow::new(code), &keys, &name, &stop, |why| println!("Pairing attempt failed: {why}"));
     let Some(p) = paired else { return Err("no Mac paired before the code expired".into()) };
-    store
-        .lock()
-        .and_then(|l| l.save_peer(&MacRecord { public: p.public, name: p.name.clone() }))
-        .map_err(|e| format!("paired, but saving failed: {e}"))?;
-    println!("Paired with {} (key {}).", p.name, fingerprint(&p.public));
+    let lock = store.lock().map_err(|e| format!("paired, but saving failed: {e}"))?;
+    if lock.generation().as_deref() != Some(generation.as_str()) {
+        return Err("an Unpair or another pairing replaced this one meanwhile; pair again if you still want this Mac".into());
+    }
+    lock.save_peer(&MacRecord { public: p.public, name: p.name.clone() }).map_err(|e| format!("paired, but saving failed: {e}"))?;
+    drop(lock);
+    println!("{}", crate::role::paired_line(&p));
     restart_service().map_err(|e| format!("paired, but {e}"))?;
     println!("The Hop service is using the new pairing.");
     Ok(())

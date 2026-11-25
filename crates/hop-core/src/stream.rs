@@ -3,7 +3,7 @@
 
 use crate::clock::now_us;
 use crate::crypto::StaticKeys;
-use crate::link::{Event, Link};
+use crate::link::{Event, Link, HANDSHAKE_RETRY, RECONNECT_AFTER};
 use crate::responder::{Datagram, Responder};
 use crate::video::{self, ClockOffset, Encoded, Fragmenter, Frame, RateControl, Reassembler};
 use crate::wire::Want;
@@ -38,11 +38,15 @@ pub trait Source {
     fn set_bitrate(&mut self, _bps: u32) {}
 }
 
+// The viewer's requests keep the PC answering and the link maintained (see `Client::recv`).
+const _: () = assert!((video::WANT_EVERY_US as u128) < HANDSHAKE_RETRY.as_micros());
+const _: () = assert!((video::WANT_EVERY_US as u128) < RECONNECT_AFTER.as_micros());
+
 /// Longest wait for the screen to change in one pass, so the pointer and requests stay fresh.
 const POLL_MAX_US: u64 = 4_000;
 /// Capture problems are repeated to the viewer this often while they last.
 const NOTE_EVERY_US: u64 = 2_000_000;
-/// While nobody watches, how often to look for a request.
+/// With nothing to send, how often to look for a request.
 const IDLE_POLL: Duration = Duration::from_millis(10);
 /// After the capturer fails to open, wait this long before trying again.
 const REOPEN_AFTER_US: u64 = 1_000_000;
@@ -76,8 +80,10 @@ pub fn serve(
     let (mut note, mut noted_at) = (None::<String>, 0u64);
 
     while !stop.load(Ordering::Relaxed) {
-        // 1. Requests: everything waiting, without blocking while a frame is due.
-        sock.set_nonblocking(watching)?;
+        // 1. Requests: everything waiting, without blocking while a frame is due. With nothing
+        // to send (nobody watching, or capture waiting to reopen), the receive timeout paces
+        // the loop.
+        sock.set_nonblocking(watching && source.is_some())?;
         loop {
             let (n, from) = match sock.recv_from(&mut buf) {
                 Ok(x) => x,
@@ -140,7 +146,6 @@ pub fn serve(
         idle_since = None;
         if source.is_none() {
             if now < reopen_at {
-                std::thread::sleep(IDLE_POLL);
                 continue;
             }
             match open(rate.bitrate) {

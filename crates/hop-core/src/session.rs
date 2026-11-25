@@ -7,7 +7,8 @@
 
 use crate::clock::now_us;
 use crate::controller::{Controller, Effect, Output};
-use crate::link::{Event, Link, HANDSHAKE_RETRY};
+use crate::controller::IDLE_KEEPALIVE_US;
+use crate::link::{Event, Link, HANDSHAKE_RETRY, RECONNECT_AFTER};
 use crate::wire::Msg;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -17,6 +18,8 @@ use std::time::Duration;
 /// The timer never sleeps longer than this, so link upkeep runs at least this often.
 const MAX_TIMER_SLEEP: Duration = Duration::from_millis(100);
 const _: () = assert!(MAX_TIMER_SLEEP.as_micros() < HANDSHAKE_RETRY.as_micros());
+// Even idle, the controller's keepalives keep the PC answering, so the link never reconnects.
+const _: () = assert!((IDLE_KEEPALIVE_US as u128) < RECONNECT_AFTER.as_micros());
 
 /// What a crossing means on this machine, beyond the network.
 pub trait Effects: Send + Sync {
@@ -137,17 +140,18 @@ impl Session {
     /// Heartbeats, retransmits, keepalives, the lease and reconnects. Returns how long until it
     /// next has work; an error means the link could not even try to reconnect.
     pub fn tick(&self) -> (Duration, io::Result<()>) {
-        let next = {
+        let wait = {
             let mut c = self.ctl.lock().unwrap();
             let out = c.tick(now_us());
             self.finish(&c, out);
-            c.next_wake(now_us())
+            // Planned under the lock, so a step that makes work due sooner either sees this
+            // plan (and wakes the timer) or comes before it (and the plan includes its work).
+            let now = now_us();
+            let wait = Duration::from_micros(c.next_wake(now).saturating_sub(now)).clamp(Duration::from_micros(300), MAX_TIMER_SLEEP);
+            self.timer_at.store(now + wait.as_micros() as u64, Ordering::SeqCst);
+            wait
         };
-        let link = self.link.maintain();
-        let now = now_us();
-        let wait = Duration::from_micros(next.saturating_sub(now)).clamp(Duration::from_micros(300), MAX_TIMER_SLEEP);
-        self.timer_at.store(now + wait.as_micros() as u64, Ordering::SeqCst);
-        (wait, link)
+        (wait, self.link.maintain())
     }
 
     /// Run [`receive`](Self::receive) and [`tick`](Self::tick) on their own threads until `stop`.

@@ -49,8 +49,13 @@ pub fn locate(rec: &PcRecord) -> Option<SocketAddr> {
 pub fn pair_with(addr: SocketAddr, code: &str) -> Result<PcRecord, String> {
     let store = store();
     let saving = |e: io::Error| format!("Could not save the pairing: {e}");
-    let generation = store.lock().and_then(|mut l| l.new_generation()).map_err(saving)?; // unlocked during the handshake
-    let keys = store.keys().map_err(|e| format!("cannot read or create this Mac's key in {}: {e}", store.dir.display()))?;
+    // Under the lock: a new generation, and this Mac's key (made here on a first pairing, so two
+    // pairings at once cannot each make one). The handshake itself runs unlocked.
+    let (generation, keys) = {
+        let mut lock = store.lock().map_err(saving)?;
+        let keys = store.keys().map_err(|e| format!("cannot read or create this Mac's key in {}: {e}", store.dir.display()))?;
+        (lock.new_generation().map_err(saving)?, keys)
+    };
     let p = link::pair(addr, &keys, code, &net::host_name()).map_err(|e| match e {
         PairError::WrongCode => "That code is not right. Show a fresh one on the PC and try again.".to_string(),
         PairError::Io(e) if e.kind() == io::ErrorKind::ConnectionRefused => {

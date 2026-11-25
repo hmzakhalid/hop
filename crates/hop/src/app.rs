@@ -13,7 +13,7 @@ use crate::{login, macos, pc, prefs, updates};
 use hop_core::controller::ControllerConfig;
 use hop_core::layout::Side;
 use hop_core::link::{Found, Link};
-use hop_core::ui::{MAC_PAIR_ITEM, PC_PAIR_ITEM};
+use hop_core::ui::{HOTKEY, MAC_PAIR_ITEM, PC_PAIR_ITEM};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
@@ -172,6 +172,7 @@ fn supervise(shared: &Shared) {
             continue;
         };
         let prefs_now = shared.prefs_changed.load(Ordering::SeqCst);
+        let mut moved_to = None;
         if let Some(c) = &current {
             let same = c.public == rec.public && c.prefs == prefs_now;
             let silent = c.link.quiet_for().is_none_or(|q| q > SILENT_AFTER);
@@ -187,19 +188,25 @@ fn supervise(shared: &Shared) {
                 }
                 next_try = Instant::now() + RETRY;
                 match pc::locate(&rec) {
-                    Some(a) if a != c.link.peer() => {}
+                    Some(a) if a != c.link.peer() => moved_to = Some(a),
                     _ => continue,
                 }
             }
             live.detach();
             current = None;
         }
-        if Instant::now() < next_try {
-            continue;
-        }
-        next_try = Instant::now() + RETRY;
-        shared.set_conn(Conn::Looking(rec.name.clone()));
-        let Some(addr) = pc::locate(&rec) else { continue };
+        let addr = match moved_to {
+            Some(a) => a, // just found at a new address: connect there now
+            None => {
+                if Instant::now() < next_try {
+                    continue;
+                }
+                next_try = Instant::now() + RETRY;
+                shared.set_conn(Conn::Looking(rec.name.clone()));
+                let Some(a) = pc::locate(&rec) else { continue };
+                a
+            }
+        };
         match pc::open(rec.clone(), addr) {
             Err(_) => shared.set_conn(Conn::Unreachable(rec.name.clone())),
             Ok(_) if !pc::still_paired(&rec.public) => {} // forgotten or replaced meanwhile
@@ -391,10 +398,15 @@ impl Menu {
             self.add(menu, "Allow Accessibility Access…", Some(sel!(grantAccess:)));
         }
         if let Conn::Connected { name, .. } = &conn {
-            self.add(menu, &format!("Switch to {name}   ⌃⌥⌘{}", prefs.side.arrow()), Some(sel!(switchToPC:)));
+            self.add(menu, &format!("Switch to {name}   {HOTKEY}{}", prefs.side.arrow()), Some(sel!(switchToPC:)));
             self.add(menu, &format!("Show {name}'s Screen"), Some(sel!(showScreen:)));
         }
-        let paired = pc::store().peer().is_some();
+        // Each state knows, except before Accessibility, when the supervisor has not run yet.
+        let paired = match conn {
+            Conn::NotPaired => false,
+            Conn::NeedsAccess => pc::store().peer().is_some(),
+            Conn::Looking(_) | Conn::Unreachable(_) | Conn::Connected { .. } => true,
+        };
         let pair = if paired { "Pair with Another PC…".to_string() } else { format!("{MAC_PAIR_ITEM}…") };
         self.add(menu, &pair, Some(sel!(pairPC:)));
         if paired {
@@ -575,8 +587,8 @@ fn pair(addr: SocketAddr, code: String) {
             let mtm = MainThreadMarker::new().unwrap();
             match r {
                 Ok(rec) => {
-                    let info = "Press ⌃⌥⌘ and the arrow toward the PC to use it; the same with the other arrow brings you back. The Settings menu sets where the PC is.";
-                    show_alert(mtm, &format!("Paired with {}", rec.name), info, &["OK"], None);
+                    let info = format!("Press {HOTKEY} and the arrow toward the PC to use it; the same with the other arrow brings you back. The Settings menu sets where the PC is.");
+                    show_alert(mtm, &format!("Paired with {}", rec.name), &info, &["OK"], None);
                 }
                 Err(e) => {
                     if show_alert(mtm, "Pairing did not work", &e, &["Try Again", "Cancel"], None) == 0 {

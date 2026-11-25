@@ -29,7 +29,7 @@ static TEXT: Mutex<String> = Mutex::new(String::new());
 
 /// The indicator's text while the PC at `side` has the keyboard and mouse.
 pub fn badge_text(pc_name: &str, side: hop_core::layout::Side) -> String {
-    format!("Keyboard & mouse → {pc_name}   ·   ⌃⌥⌘{} to come back", side.opposite().arrow())
+    format!("Keyboard & mouse → {pc_name}   ·   {}{} to come back", hop_core::ui::HOTKEY, side.opposite().arrow())
 }
 
 pub fn show(text: &str) {

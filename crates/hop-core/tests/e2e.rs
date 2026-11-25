@@ -4,7 +4,7 @@
 
 use hop_core::agent::{self, AgentConfig, AgentEvent, PairingWindow, Platform};
 use hop_core::controller::{Controller, ControllerConfig, Effect, LeaveReason, Output};
-use hop_core::crypto::{new_pairing_code, StaticKeys};
+use hop_core::crypto::{new_pairing_code, PairError, StaticKeys};
 use hop_core::keymap::{mac, win, MacMod};
 use hop_core::layout::Rect;
 use hop_core::link::{self, Link};
@@ -440,6 +440,24 @@ fn junk_flood_cannot_starve_the_dead_man() {
     flood.join().unwrap();
 }
 
+
+#[test]
+fn pairing_closes_after_too_many_wrong_codes() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let code = new_pairing_code();
+    let window = PairingWindow::new(code.clone());
+    let pc = StaticKeys::generate();
+    let pairing = thread::spawn(move || agent::pair(listener, &window, &pc, "PC", &AtomicBool::new(false), |_| {}));
+    let mac = StaticKeys::generate();
+    let wrong = if code.starts_with('0') { "1111-1111-1111" } else { "0000-0000-0000" };
+    for _ in 0..agent::PAIRING_MAX_FAILURES {
+        let r = link::pair(addr, &mac, wrong, "Mac");
+        assert!(matches!(r, Err(PairError::WrongCode)), "{r:?}");
+    }
+    assert_eq!(pairing.join().unwrap(), None, "pairing closed after the last wrong code");
+    assert!(link::pair(addr, &mac, &code, "Mac").is_err(), "even the right code is too late now");
+}
 
 #[test]
 fn pairing_alone_works_beside_a_running_agent() {

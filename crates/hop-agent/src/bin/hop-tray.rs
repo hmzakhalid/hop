@@ -94,7 +94,7 @@ mod tray {
 
     fn status() -> String {
         match scm::service_state() {
-            Ok(Some(SERVICE_RUNNING)) => "Hop is running. On your Mac, press ⌃⌥⌘ and an arrow.".into(),
+            Ok(Some(SERVICE_RUNNING)) => format!("Hop is running. On your Mac, press {} and an arrow.", hop_core::ui::HOTKEY),
             Ok(Some(SERVICE_START_PENDING)) => "Hop is starting…".into(),
             Ok(Some(SERVICE_STOPPED | SERVICE_STOP_PENDING)) => "Hop is stopped. Reinstall Hop to start it again.".into(),
             Ok(Some(_)) => "Hop is busy…".into(),

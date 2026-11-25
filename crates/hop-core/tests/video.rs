@@ -64,11 +64,15 @@ struct Pc {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
     capturers: Arc<AtomicU32>,
+    server: Option<thread::JoinHandle<()>>,
 }
 
 impl Drop for Pc {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.server.take() {
+            t.join().unwrap(); // its socket is closed once this returns
+        }
     }
 }
 
@@ -81,14 +85,14 @@ fn start_pc_on(sock: UdpSocket, pc: StaticKeys, mac_public: [u8; 32], changing_p
     let stop = Arc::new(AtomicBool::new(false));
     let capturers = Arc::new(AtomicU32::new(0));
     let (s, c) = (stop.clone(), capturers.clone());
-    thread::spawn(move || {
+    let server = thread::spawn(move || {
         let open = |_bitrate| -> io::Result<Box<dyn Source>> {
             c.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(Synthetic { n: 0, polls: 0, changing_polls, opened: c.clone() }))
         };
         stream::serve(sock, &pc, || Some(mac_public), open, &s, |_| {}).unwrap();
     });
-    Pc { addr, stop, capturers }
+    Pc { addr, stop, capturers, server: Some(server) }
 }
 
 /// Forwards datagrams both ways, dropping `drop_pct` % of the PC's video.
@@ -166,9 +170,7 @@ fn the_picture_comes_back_after_the_pc_restarts() {
     assert!(before.len() > 100, "only {} frames before the restart", before.len());
 
     drop(first);
-    let sock = (0..100)
-        .find_map(|_| UdpSocket::bind(addr).ok().or_else(|| { thread::sleep(Duration::from_millis(20)); None }))
-        .expect("the old server lets go of its port");
+    let sock = UdpSocket::bind(addr).expect("the old server let go of its port");
     watch(&client, Duration::from_millis(200)); // frames the old process sent before it stopped
     let _second = start_pc_on(sock, pc, mac.public, i32::MAX);
     let (after, cursors) = watch_all(&client, Duration::from_millis(3000));
