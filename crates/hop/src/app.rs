@@ -22,7 +22,7 @@ use objc2_app_kit::{
     NSAlert, NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSPopUpButton,
     NSStatusBar, NSStatusItem, NSTextField, NSVariableStatusItemLength, NSView, NSWorkspace,
 };
-use objc2_foundation::{ns_string, MainThreadMarker, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL};
+use objc2_foundation::{ns_string, MainThreadMarker, NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL};
 use std::cell::OnceCell;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -317,7 +317,10 @@ define_class!(
             let app = NSApplication::sharedApplication(self.mtm());
             #[allow(deprecated)]
             app.activateIgnoringOtherApps(true);
-            app.orderFrontStandardAboutPanel(None);
+            // The panel shows the version from Info.plist; this adds the commit it was built from.
+            let build = NSString::from_str(&format!("build {}", hop_core::BUILD));
+            let options = NSDictionary::from_slices(&[unsafe { objc2_app_kit::NSAboutPanelOptionVersion }], &[build.as_ref() as &AnyObject]);
+            unsafe { app.orderFrontStandardAboutPanelWithOptions(&options) };
         }
 
         #[unsafe(method(quitHop:))]

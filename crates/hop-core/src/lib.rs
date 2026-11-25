@@ -9,7 +9,7 @@
 //! [`stream::Client`] on the Mac, with the frame rules in [`video`]. Both PC channels accept the
 //! Mac through a [`responder::Responder`].
 
-/// The commit this was built from, `+` if the tree had changes.
+/// The commit this was built from.
 pub const BUILD: &str = env!("HOP_BUILD");
 
 pub mod agent;

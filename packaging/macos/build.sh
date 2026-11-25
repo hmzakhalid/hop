@@ -23,7 +23,7 @@ for a in "$@"; do
 done
 
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)
-BUILD=$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)
+BUILD=$(git -C "$ROOT" rev-list --count HEAD) # rises with every commit, as updates need
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 FEATURES=(--no-default-features)
