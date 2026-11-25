@@ -7,9 +7,9 @@
 
 use hop_core::h264;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSApplication, NSBackingStoreType, NSCursor, NSWindow, NSWindowStyleMask};
+use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2_app_kit::{NSApplication, NSBackingStoreType, NSCursor, NSWindow, NSWindowDelegate, NSWindowStyleMask};
 use objc2_av_foundation::{
     AVLayerVideoGravityResizeAspect, AVQueuedSampleBufferRendering, AVQueuedSampleBufferRenderingStatus, AVSampleBufferDisplayLayer,
     AVSampleBufferVideoRenderer,
@@ -20,8 +20,9 @@ use objc2_core_media::{
     kCMSampleAttachmentKey_DisplayImmediately, CMBlockBuffer, CMFormatDescription, CMSampleBuffer,
     CMVideoFormatDescriptionCreateFromH264ParameterSets, CMVideoFormatDescriptionCreateFromHEVCParameterSets,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::CALayer;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
@@ -166,17 +167,43 @@ pub fn dimensions(annexb: &[u8], hevc: bool) -> Option<(u32, u32)> {
     Some((d.width as u32, d.height as u32))
 }
 
+struct CloseIvars {
+    on_close: RefCell<Option<Box<dyn FnOnce()>>>,
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements, and `CloseWatcher` does not implement Drop.
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = CloseIvars]
+    struct CloseWatcher;
+
+    unsafe impl NSObjectProtocol for CloseWatcher {}
+
+    unsafe impl NSWindowDelegate for CloseWatcher {
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _: &NSNotification) {
+            if let Some(f) = self.ivars().on_close.borrow_mut().take() {
+                f();
+            }
+        }
+    }
+);
+
 /// The window and its layers. Main thread only.
 pub struct Window {
     window: Retained<NSWindow>,
     video: Retained<AVSampleBufferDisplayLayer>,
     cursor: Retained<CALayer>,
-    size: std::cell::Cell<(f64, f64)>,
+    size: Cell<(f64, f64)>,
+    /// The window's delegate, which it holds only weakly.
+    _watcher: Retained<CloseWatcher>,
 }
 
 impl Window {
-    /// Open a window for a `width`×`height` PC screen, sized to fit the Mac's screen.
-    pub fn open(mtm: MainThreadMarker, title: &str, width: u32, height: u32) -> (Window, Decoder) {
+    /// Open a window for a `width`×`height` PC screen, sized to fit the Mac's screen. `on_close`
+    /// runs once, when the user closes it (not when it is minimised).
+    pub fn open(mtm: MainThreadMarker, title: &str, width: u32, height: u32, on_close: impl FnOnce() + 'static) -> (Window, Decoder) {
         let (w, h) = (width.max(2) as f64, height.max(2) as f64);
         let scale = (1280.0 / w).min(800.0 / h).min(1.0);
         let rect = NSRect::new(NSPoint::new(120.0, 120.0), NSSize::new(w * scale, h * scale));
@@ -193,6 +220,9 @@ impl Window {
             )
         };
         unsafe { window.setReleasedWhenClosed(false) };
+        let watcher = CloseWatcher::alloc(mtm).set_ivars(CloseIvars { on_close: RefCell::new(Some(Box::new(on_close))) });
+        let watcher: Retained<CloseWatcher> = unsafe { msg_send![super(watcher), init] };
+        window.setDelegate(Some(ProtocolObject::from_ref(&*watcher)));
         window.setTitle(&NSString::from_str(title));
         window.setContentAspectRatio(NSSize::new(w, h));
         let video = unsafe { AVSampleBufferDisplayLayer::new() };
@@ -229,16 +259,11 @@ impl Window {
         NSApplication::sharedApplication(mtm).activate();
         let renderer = unsafe { video.sampleBufferRenderer() };
         let decoder = Decoder { renderer, format: None, params: Vec::new() };
-        (Window { window, video, cursor, size: std::cell::Cell::new((w, h)) }, decoder)
+        (Window { window, video, cursor, size: Cell::new((w, h)), _watcher: watcher }, decoder)
     }
 
     pub fn set_title(&self, title: &str) {
         self.window.setTitle(&NSString::from_str(title));
-    }
-
-    /// Whether the user still has the window open.
-    pub fn is_open(&self) -> bool {
-        self.window.isVisible()
     }
 
     /// The PC's picture size changed (or became known): keep the window's shape.

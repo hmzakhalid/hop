@@ -261,7 +261,7 @@ define_class!(
             let shared = self.shared();
             let Conn::Connected { name, addr } = shared.conn.lock().unwrap().clone() else { return };
             let Some(rec) = pc::store().peer() else { return };
-            crate::screen::open(self.mtm(), crate::screen::Target { name, addr, public: rec.public }, shared.live.get().copied());
+            crate::screen::open(self.mtm(), crate::screen::Target { name, addr, public: rec.public }, shared.live.get().copied(), || {});
         }
 
         #[unsafe(method(grantAccess:))]

@@ -112,7 +112,7 @@ pub fn view_file(path: &str) -> ! {
     let mtm = MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    let (window, mut decoder) = view::Window::open(mtm, &format!("{path} — {w}×{h}"), w, h);
+    let (window, mut decoder) = view::Window::open(mtm, &format!("{path} — {w}×{h}"), w, h, || std::process::exit(0));
     window.set_cursor(Some((w as f64 / 2.0, h as f64 / 2.0)));
     println!("Playing {} frames of {w}×{h} at 60 fps.", frames.len());
     std::thread::spawn(move || loop {

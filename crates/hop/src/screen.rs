@@ -2,12 +2,13 @@
 //!
 //! Threads:
 //! - the receiver puts frames back together and hands them to the hardware decoder;
-//! - the requester keeps asking the PC for frames while the window is open;
+//! - the requester keeps asking the PC for frames until the window closes;
 //! - with control, the cursor follower draws the PC cursor from the Mac's own position, so the
 //!   cursor never waits for the network or the encoder.
 //!
-//! The window itself lives on the main thread (`WINDOW`); the threads reach it with
-//! [`macos::on_main`].
+//! Each opening of the window is one viewer with its own id and stop flag. The window lives on
+//! the main thread (`CURRENT`); a viewer's threads reach it with [`macos::on_main`], and only
+//! while it is still theirs. Closing the window stops them.
 
 use crate::live::Live;
 use crate::view::{self, Pushed, Window};
@@ -17,13 +18,22 @@ use hop_core::video::{self, Frame};
 use objc2::MainThreadMarker;
 use std::cell::RefCell;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-thread_local! {
-    static WINDOW: RefCell<Option<Window>> = const { RefCell::new(None) };
+/// The open viewer window, and which viewer it belongs to.
+struct Current {
+    id: u64,
+    window: Window,
 }
+
+thread_local! {
+    static CURRENT: RefCell<Option<Current>> = const { RefCell::new(None) };
+    /// A window just closed, released once its close notification has returned.
+    static CLOSED: RefCell<Option<Current>> = const { RefCell::new(None) };
+}
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// How often the PC cursor is redrawn while the Mac drives it (above any display's refresh).
 const CURSOR_EVERY: Duration = Duration::from_micros(4_000);
@@ -42,27 +52,50 @@ pub struct Target {
 }
 
 /// Open the viewer, or bring it forward if it is already open. Main thread. With `live`, the
-/// cursor follows the Mac's own control of the PC.
-pub fn open(mtm: MainThreadMarker, target: Target, live: Option<&'static Live>) {
-    let already = WINDOW.with(|w| w.borrow().as_ref().is_some_and(|w| w.is_open()));
-    if already {
+/// cursor follows the Mac's own control of the PC. `on_close` runs after the user closes it.
+pub fn open(mtm: MainThreadMarker, target: Target, live: Option<&'static Live>, on_close: impl FnOnce() + 'static) {
+    if CURRENT.with(|c| c.borrow().is_some()) {
         objc2_app_kit::NSApplication::sharedApplication(mtm).activate();
         return;
     }
-    let (window, decoder) = Window::open(mtm, &format!("{} — connecting…", target.name), 2560, 1440);
-    WINDOW.with(|w| *w.borrow_mut() = Some(window));
-    std::thread::spawn(move || run(target, decoder, live));
+    let viewer = Viewer { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), stop: Arc::new(AtomicBool::new(false)) };
+    let closing = viewer.clone();
+    let (window, decoder) = Window::open(mtm, &format!("{} — connecting…", target.name), 2560, 1440, move || {
+        closing.stop.store(true, Ordering::Relaxed);
+        let gone = CURRENT.with(|c| c.borrow_mut().take_if(|c| c.id == closing.id));
+        CLOSED.with(|c| *c.borrow_mut() = gone);
+        macos::on_main(|| drop(CLOSED.with(|c| c.borrow_mut().take())));
+        on_close();
+    });
+    CURRENT.with(|c| *c.borrow_mut() = Some(Current { id: viewer.id, window }));
+    std::thread::spawn(move || run(viewer, target, decoder, live));
 }
 
-fn with_window(f: impl FnOnce(&Window) + Send + 'static) {
-    macos::on_main(move || WINDOW.with(|w| {
-        if let Some(w) = w.borrow().as_ref() {
-            f(w);
-        }
-    }));
+/// One opening of the window: its threads run until `stop`, and touch only their own window.
+#[derive(Clone)]
+struct Viewer {
+    id: u64,
+    stop: Arc<AtomicBool>,
 }
 
-fn run(target: Target, mut decoder: view::Decoder, live: Option<&'static Live>) {
+impl Viewer {
+    fn open(&self) -> bool {
+        !self.stop.load(Ordering::Relaxed)
+    }
+
+    fn with_window(&self, f: impl FnOnce(&Window) + Send + 'static) {
+        let id = self.id;
+        macos::on_main(move || {
+            CURRENT.with(|c| {
+                if let Some(c) = c.borrow().as_ref().filter(|c| c.id == id) {
+                    f(&c.window);
+                }
+            })
+        });
+    }
+}
+
+fn run(viewer: Viewer, target: Target, mut decoder: view::Decoder, live: Option<&'static Live>) {
     let name = target.name.clone();
     let video_addr = SocketAddr::new(target.addr.ip(), target.addr.port().wrapping_add(video::PORT_OFFSET));
     let client = match pc::store().keys().map_err(|e| e.to_string()).and_then(|keys| {
@@ -71,20 +104,19 @@ fn run(target: Target, mut decoder: view::Decoder, live: Option<&'static Live>) 
         Ok(c) => c,
         Err(e) => {
             let msg = format!("{name} — no picture: {e}. Is Hop up to date on the PC?");
-            with_window(move |w| w.set_title(&msg));
+            viewer.with_window(move |w| w.set_title(&msg));
             return;
         }
     };
-    let open = Arc::new(AtomicBool::new(true));
     let local_cursor = Arc::new(AtomicBool::new(false));
-    request_frames(client.clone(), open.clone());
+    request_frames(client.clone(), viewer.clone());
     if let Some(live) = live {
-        follow_cursor(live, open.clone(), local_cursor.clone());
+        follow_cursor(live, viewer.clone(), local_cursor.clone());
     }
 
     let mut stats = Stats::new();
     let (mut size, mut note, mut hevc) = (None::<(u32, u32)>, None::<String>, false);
-    while open.load(Ordering::Relaxed) {
+    while viewer.open() {
         let received = match client.recv() {
             Ok(r) => r,
             Err(_) => {
@@ -97,7 +129,7 @@ fn run(target: Target, mut decoder: view::Decoder, live: Option<&'static Live>) 
                 if frame.keyframe {
                     if let Some(dims) = view::dimensions(&frame.data, frame.hevc).filter(|d| Some(*d) != size) {
                         size = Some(dims);
-                        with_window(move |w| w.set_picture_size(dims.0, dims.1));
+                        viewer.with_window(move |w| w.set_picture_size(dims.0, dims.1));
                     }
                 }
                 let t = Instant::now();
@@ -110,7 +142,7 @@ fn run(target: Target, mut decoder: view::Decoder, live: Option<&'static Live>) 
                 stats.shown(&frame, client.age_us(&frame), t.elapsed());
                 (note, hevc) = (None, frame.hevc);
             }
-            Some(Received::Cursor(at)) => show_cursor(&local_cursor, at),
+            Some(Received::Cursor(at)) => show_cursor(&viewer, &local_cursor, at),
             Some(Received::Note(text)) => {
                 if note.as_ref() != Some(&text) {
                     println!("{name} — {text}");
@@ -129,7 +161,7 @@ fn run(target: Target, mut decoder: view::Decoder, live: Option<&'static Live>) 
             if note.is_none() {
                 println!("{title}"); // for `hop view` in a terminal
             }
-            with_window(move |win| win.set_title(&title));
+            viewer.with_window(move |win| win.set_title(&title));
             stats = Stats::new();
         }
     }
@@ -138,10 +170,10 @@ fn run(target: Target, mut decoder: view::Decoder, live: Option<&'static Live>) 
 
 /// Draw the PC pointer the PC reported, unless the Mac is driving it (then the Mac's own
 /// position is newer).
-fn show_cursor(local: &AtomicBool, at: Option<(i32, i32)>) {
+fn show_cursor(viewer: &Viewer, local: &AtomicBool, at: Option<(i32, i32)>) {
     if !local.load(Ordering::Relaxed) {
         let c = at.map(|(x, y)| (x as f64, y as f64));
-        with_window(move |w| w.set_cursor(c));
+        viewer.with_window(move |w| w.set_cursor(c));
     }
 }
 
@@ -191,37 +223,25 @@ impl Stats {
     }
 }
 
-/// Ask for frames while the window is open; notice when it closes.
-fn request_frames(client: Arc<Client>, open: Arc<AtomicBool>) {
+/// Ask for frames until the window closes.
+fn request_frames(client: Arc<Client>, viewer: Viewer) {
     std::thread::spawn(move || {
-        while open.load(Ordering::Relaxed) {
+        while viewer.open() {
             let _ = client.want(true);
-            let o = open.clone();
-            macos::on_main(move || {
-                let still = WINDOW.with(|w| {
-                    let mut w = w.borrow_mut();
-                    let open = w.as_ref().is_some_and(|w| w.is_open());
-                    if !open {
-                        *w = None; // closed by the user: release it
-                    }
-                    open
-                });
-                o.store(still, Ordering::Relaxed);
-            });
             std::thread::sleep(Duration::from_micros(video::WANT_EVERY_US));
         }
     });
 }
 
 /// While the Mac drives the PC, draw the PC cursor where the Mac is putting it.
-fn follow_cursor(live: &'static Live, open: Arc<AtomicBool>, local: Arc<AtomicBool>) {
+fn follow_cursor(live: &'static Live, viewer: Viewer, local: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let mut last = None;
-        while open.load(Ordering::Relaxed) {
+        while viewer.open() {
             let at = live.session().and_then(|s| s.read(|c| c.pc_cursor()));
             local.store(at.is_some(), Ordering::Relaxed);
             if at.is_some() && at != last {
-                with_window(move |w| w.set_cursor(at));
+                viewer.with_window(move |w| w.set_cursor(at));
             }
             last = at;
             std::thread::sleep(CURSOR_EVERY);
@@ -239,17 +259,6 @@ pub fn view_cli(host: Option<&str>) -> ! {
     crate::hud::init();
     let mtm = MainThreadMarker::new().expect("main thread");
     objc2_app_kit::NSApplication::sharedApplication(mtm).setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Regular);
-    open(mtm, Target { name: rec.name, addr, public: rec.public }, None);
-    // Quit when the window closes.
-    std::thread::spawn(|| loop {
-        std::thread::sleep(Duration::from_millis(500));
-        let gone = Arc::new(AtomicBool::new(false));
-        let g = gone.clone();
-        macos::on_main(move || g.store(WINDOW.with(|w| w.borrow().is_none()), Ordering::Relaxed));
-        std::thread::sleep(Duration::from_millis(100));
-        if gone.load(Ordering::Relaxed) {
-            std::process::exit(0);
-        }
-    });
+    open(mtm, Target { name: rec.name, addr, public: rec.public }, None, || std::process::exit(0));
     crate::hud::run()
 }
