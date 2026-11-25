@@ -86,6 +86,7 @@ packaging/release.sh                       # both, checked for leaks, ready for 
 | [docs/WINDOWS_SERVICE.md](docs/WINDOWS_SERVICE.md) | The service: what it does, its security model, install and uninstall |
 | [docs/TESTING.md](docs/TESTING.md) | The test suite, testing on a real PC without typing into it, and latency measurement |
 | [docs/RELEASE.md](docs/RELEASE.md) | Building, signing and publishing a release |
+| [docs/decisions/](docs/decisions/) | Why the code is shaped the way it is, and the special cases kept on purpose |
 | [site/](site/) | The website (static, no build step) |
 
 Bug reports and pull requests are welcome. Please run `cargo test --workspace` first, and say which macOS and Windows versions you tried.
