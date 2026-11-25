@@ -13,7 +13,7 @@ pub fn load(dir: &Path) -> ControllerConfig {
     let mut c = ControllerConfig::default();
     let Ok(Some(kv)) = read_kv(&dir.join(FILE)) else { return c };
     let flag = |k: &str, default: bool| kv.get(k).map_or(default, |v| v == "true");
-    let speed = |k: &str, default: f64| kv.get(k).and_then(|v| v.parse().ok()).filter(|x: &f64| *x > 0.0 && *x < 20.0).unwrap_or(default);
+    let speed = |k: &str, default: f64| kv.get(k).and_then(|v| v.parse().ok()).filter(|x| ControllerConfig::valid_speed(*x)).unwrap_or(default);
     if let Some(side) = kv.get("side").and_then(|v| v.parse().ok()) {
         c.side = side;
     }

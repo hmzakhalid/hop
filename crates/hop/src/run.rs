@@ -3,9 +3,7 @@
 use crate::cli::RunOptions;
 use crate::live::{self, Live};
 use crate::{hud, macos, pc};
-use hop_core::controller::Controller;
 use hop_core::link::Event;
-use hop_core::session::Session;
 
 pub fn run(host: Option<&str>, o: &RunOptions) -> Result<(), String> {
     let signals = live::block_signals(); // before any thread starts
@@ -20,9 +18,8 @@ pub fn run(host: Option<&str>, o: &RunOptions) -> Result<(), String> {
 
     hud::init();
     let live = Live::start(signals, o.verbose)?;
-    let session = Session::new(Controller::new(o.cfg.clone(), macos::displays()), pc.link.clone(), live.effects(&pc.name, side));
     let verbose = o.verbose;
-    live.attach(session, move |e| match e {
+    live.connect(pc.link.clone(), &pc.name, o.cfg.clone(), move |e| match e {
         Ok(Event::Connected) if verbose => println!("link: connected"),
         Ok(Event::Lost) if verbose => println!("link: the PC restarted, reconnecting"),
         Err(e) if verbose => eprintln!("link: {e}"),

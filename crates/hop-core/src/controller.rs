@@ -46,6 +46,13 @@ pub struct ControllerConfig {
     pub map: MapConfig,
 }
 
+impl ControllerConfig {
+    /// The pointer and scroll speed multipliers a user may choose.
+    pub fn valid_speed(x: f64) -> bool {
+        x > 0.0 && x < 20.0
+    }
+}
+
 impl Default for ControllerConfig {
     fn default() -> Self {
         Self {
@@ -346,29 +353,34 @@ impl Controller {
         self.send_now(now)
     }
 
+    /// Switch sides, as the hotkey and the menu do: hand control back if the PC has it, else
+    /// cross to where the PC's pointer is (or the middle of the PC's first screen). `loc` is the
+    /// Mac cursor and `flags` the modifiers held now (`CGEventFlags`), which stay on the Mac.
+    pub fn switch(&mut self, now: u64, loc: (f64, f64), flags: u64) -> Output {
+        if self.remote.is_some() {
+            return self.leave(now, LeaveReason::Hotkey);
+        }
+        if self.can_cross(now) {
+            let rects = self.pc_rects();
+            let pos = self
+                .pc_cursor
+                .map(|(x, y)| (x as f64, y as f64))
+                .filter(|p| rects.iter().any(|r| r.contains(*p)))
+                .or_else(|| rects.first().map(|r| ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0)));
+            if let Some(pos) = pos {
+                return Output { swallow: true, ..self.enter(now, pos, loc, flags) };
+            }
+        }
+        Output::pass()
+    }
+
     /// Key down/up. `loc` is the Mac cursor (for the hotkey), `flags` the `CGEventFlags`.
     pub fn key(&mut self, now: u64, mac_code: u16, down: bool, repeat: bool, flags: u64, loc: (f64, f64)) -> Output {
         if mac::is_switch(mac_code, flags) {
             if !down || repeat {
                 return if self.remote.is_some() { Output::swallow() } else { Output::pass() };
             }
-            if self.remote.is_some() {
-                return self.leave(now, LeaveReason::Hotkey);
-            }
-            if self.can_cross(now) {
-                let rects = self.pc_rects();
-                let pos = self
-                    .pc_cursor
-                    .map(|(x, y)| (x as f64, y as f64))
-                    .filter(|p| rects.iter().any(|r| r.contains(*p)))
-                    .or_else(|| rects.first().map(|r| ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0)));
-                if let Some(pos) = pos {
-                    let mut out = self.enter(now, pos, loc, flags);
-                    out.swallow = true;
-                    return out;
-                }
-            }
-            return Output::pass();
+            return self.switch(now, loc, flags);
         }
         if self.remote.is_none() {
             return Output::pass();

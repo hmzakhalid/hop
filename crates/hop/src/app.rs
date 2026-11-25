@@ -10,11 +10,9 @@
 
 use crate::live::{self, Live, SignalsBlocked};
 use crate::{hud, login, macos, pc, prefs, updates};
-use hop_core::controller::{Controller, ControllerConfig};
-use hop_core::keymap::mac;
+use hop_core::controller::ControllerConfig;
 use hop_core::layout::Side;
 use hop_core::link::{Found, Link};
-use hop_core::session::Session;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
@@ -206,9 +204,7 @@ fn supervise(shared: &Shared) {
             Ok(_) if !pc::still_paired(&rec.public) => {} // forgotten or replaced meanwhile
             Ok(pc) => {
                 let cfg = shared.prefs.lock().unwrap().clone();
-                let effects = live.effects(&pc.name, cfg.side);
-                let session = Session::new(Controller::new(cfg, macos::displays()), pc.link.clone(), effects);
-                live.attach(session, |_| {});
+                live.connect(pc.link.clone(), &pc.name, cfg, |_| {});
                 shared.set_conn(Conn::Connected { name: pc.name, addr: pc.link.peer(), public: rec.public });
                 current = Some(Current { public: rec.public, prefs: prefs_now, link: pc.link });
             }
@@ -243,16 +239,9 @@ define_class!(
     impl Menu {
         #[unsafe(method(switchToPC:))]
         fn switch_to_pc(&self, _: Option<&AnyObject>) {
-            let side = self.shared().prefs.lock().unwrap().side;
-            let arrow = match side {
-                Side::Left => mac::LEFT,
-                Side::Right => mac::RIGHT,
-                Side::Top => mac::UP,
-                Side::Bottom => mac::DOWN,
-            };
             if let Some(s) = self.shared().live.get().and_then(|l| l.session()) {
                 let at = macos::cursor_location();
-                s.act(|c, now| c.key(now, arrow, true, false, mac::HYPER, at));
+                s.act(|c, now| c.switch(now, at, 0));
             }
         }
 

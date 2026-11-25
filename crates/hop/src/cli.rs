@@ -131,7 +131,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, ParseErr
     let mut run = RunOptions { cfg: ControllerConfig::default(), verbose: false, stats: false };
     let (mut run_flags, mut side_given) = (false, false);
     let number = |v: Option<String>, name: &str| -> Result<f64, String> {
-        v.and_then(|s| s.parse().ok()).filter(|x: &f64| *x > 0.0 && *x < 20.0).ok_or(format!("{name} needs a positive number"))
+        v.and_then(|s| s.parse().ok()).filter(|x| ControllerConfig::valid_speed(*x)).ok_or(format!("{name} needs a number above 0 and below 20"))
     };
     while let Some(a) = it.next() {
         if let Some(&(_, w)) = WORDS.iter().find(|(name, _)| *name == a) {

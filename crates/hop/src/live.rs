@@ -7,9 +7,8 @@ use crate::cursor::Cursor;
 use crate::hud;
 use crate::macos::{self, Ev};
 use hop_core::clock::now_us;
-use hop_core::controller::{Effect, LeaveReason, Output};
-use hop_core::layout::Side;
-use hop_core::link::Event;
+use hop_core::controller::{Controller, ControllerConfig, Effect, LeaveReason, Output};
+use hop_core::link::{Event, Link};
 use hop_core::session::{Effects, Session};
 use std::ffi::c_void;
 use std::io;
@@ -107,9 +106,16 @@ impl Live {
         self.current.read().unwrap().as_ref().map(|a| a.session.clone())
     }
 
-    /// What a crossing means on the Mac, for sessions with the PC called `pc_name` at `side`.
-    pub fn effects(&self, pc_name: &str, side: Side) -> Arc<dyn Effects> {
-        Arc::new(MacEffects { cursor: self.cursor.clone(), badge: hud::badge_text(pc_name, side), pc_name: pc_name.into(), verbose: self.verbose })
+    /// Drive the PC called `pc_name` over `link` with these settings, in place of any session
+    /// attached before. `on_event` sees the link's events and errors.
+    pub fn connect(&self, link: Arc<Link>, pc_name: &str, cfg: ControllerConfig, on_event: impl Fn(&io::Result<Event>) + Send + Sync + 'static) {
+        let effects = Arc::new(MacEffects {
+            cursor: self.cursor.clone(),
+            badge: hud::badge_text(pc_name, cfg.side),
+            pc_name: pc_name.into(),
+            verbose: self.verbose,
+        });
+        self.attach(Session::new(Controller::new(cfg, macos::displays()), link, effects), on_event);
     }
 
     /// End the live session, if any: the Mac gets its input back.
@@ -122,7 +128,7 @@ impl Live {
 
     /// Make `session` the live one and run its threads. A previous session hands control back
     /// and stops.
-    pub fn attach(&self, session: Arc<Session>, on_event: impl Fn(&io::Result<Event>) + Send + Sync + 'static) {
+    fn attach(&self, session: Arc<Session>, on_event: impl Fn(&io::Result<Event>) + Send + Sync + 'static) {
         let secure = self.secure_input.load(Ordering::SeqCst);
         session.act(|c, now| c.set_secure_input(now, secure));
         let stop = Arc::new(AtomicBool::new(false));
