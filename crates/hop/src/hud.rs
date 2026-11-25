@@ -6,7 +6,7 @@
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBox, NSBoxType, NSColor, NSFont, NSPanel, NSScreen,
+    NSBackingStoreType, NSBox, NSBoxType, NSColor, NSFont, NSPanel, NSScreen,
     NSStatusWindowLevel, NSTextField, NSTitlePosition, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
@@ -26,20 +26,6 @@ thread_local! {
 
 static WANT: AtomicBool = AtomicBool::new(false);
 static TEXT: Mutex<String> = Mutex::new(String::new());
-
-/// Make this process a background (no Dock icon) AppKit app. Call once on the main thread.
-pub fn init() {
-    let mtm = MainThreadMarker::new().expect("hud::init on the main thread");
-    let app = NSApplication::sharedApplication(mtm);
-    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-}
-
-/// Run the main loop (event tap and indicator) forever.
-pub fn run() -> ! {
-    let mtm = MainThreadMarker::new().expect("hud::run on the main thread");
-    NSApplication::sharedApplication(mtm).run();
-    std::process::exit(0)
-}
 
 /// The indicator's text while the PC at `side` has the keyboard and mouse.
 pub fn badge_text(pc_name: &str, side: hop_core::layout::Side) -> String {

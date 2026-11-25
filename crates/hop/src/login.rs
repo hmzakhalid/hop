@@ -1,4 +1,4 @@
-//! Open at login, through `SMAppService` (macOS 13+). Works only for an app bundle.
+//! Open at login, through `SMAppService`. Works only for an app bundle.
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
@@ -26,7 +26,7 @@ pub fn enabled() -> bool {
 }
 
 pub fn set(on: bool) -> Result<(), String> {
-    let s = main_app_service().ok_or("opening at login needs macOS 13 or later")?;
+    let s = main_app_service().ok_or("macOS did not let Hop manage its login item")?;
     let r: Result<(), Retained<NSError>> =
         unsafe { if on { msg_send![&*s, registerAndReturnError: _] } else { msg_send![&*s, unregisterAndReturnError: _] } };
     r.map_err(|e| e.localizedDescription().to_string())

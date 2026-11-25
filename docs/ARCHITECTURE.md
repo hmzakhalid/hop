@@ -131,7 +131,8 @@ Effects (live.rs): Cursor (cursor.rs) + badge (hud.rs)         ▼
 | `run` | `hop run`: connect from a terminal and run the live engine |
 | `screen` | The screen-view window's threads: one viewer per opening, each with its own stop flag |
 | `cursor` | Hide, freeze, park and revoke the Mac cursor safely across threads |
-| `macos` | FFI: event tap, cursor calls, displays, permissions, Secure Input, sockets |
+| `macos` | FFI: the app's start and main loop, event tap, cursor calls, displays, permissions, Secure Input |
+| `net` | Broadcast addresses for discovery, this Mac's name, the voice queue for input packets, AWDL |
 | `hud` | The badge (AppKit panel) |
 | `view` | The viewer window: `AVSampleBufferDisplayLayer`, the decoder (which reports the picture size), the cursor overlay, the close callback |
 | `devtools` | `drive`, `view --file`, `badge`, `menu` (only with the `dev-tools` feature; packaged builds leave them out) |

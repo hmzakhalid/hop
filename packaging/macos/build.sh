@@ -71,7 +71,9 @@ if [ -d "$FW" ]; then
   done
   sign "$FW"
 fi
-sign --entitlements "$HERE/entitlements.plist" "$APP"
+# No entitlements: Hop is not sandboxed, and the hardened runtime needs no exceptions for an
+# input tap and UDP on the local network.
+sign "$APP"
 codesign --verify --strict --deep "$APP"
 echo "   signed: ${SIGN_IDENTITY:-${LOCAL_IDENTITY:-ad-hoc}}"
 

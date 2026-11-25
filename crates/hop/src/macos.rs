@@ -3,7 +3,8 @@
 #![allow(non_upper_case_globals, non_snake_case)]
 
 use hop_core::layout::Rect;
-use std::ffi::{c_char, c_void, CStr};
+use objc2::MainThreadMarker;
+use std::ffi::{c_char, c_void};
 
 pub type CGEventRef = *mut c_void;
 pub type CFMachPortRef = *mut c_void;
@@ -184,6 +185,34 @@ pub fn attach_tap(tap: CFMachPortRef) {
     }
 }
 
+/// How this process shows itself.
+pub enum AppKind {
+    /// No Dock icon (the menu-bar app, `hop run`, the badge).
+    Background,
+    /// A Dock icon and a window of its own (`hop view`).
+    Window,
+}
+
+/// Start AppKit for this process. Call once, on the main thread, before any window, badge or
+/// menu.
+pub fn start_app(kind: AppKind) -> MainThreadMarker {
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    let mtm = MainThreadMarker::new().expect("AppKit starts on the main thread");
+    let policy = match kind {
+        AppKind::Background => NSApplicationActivationPolicy::Accessory,
+        AppKind::Window => NSApplicationActivationPolicy::Regular,
+    };
+    NSApplication::sharedApplication(mtm).setActivationPolicy(policy);
+    mtm
+}
+
+/// Run AppKit's main loop (the event tap, the badge, windows) until the process exits.
+pub fn run_app() -> ! {
+    let mtm = MainThreadMarker::new().expect("AppKit runs on the main thread");
+    objc2_app_kit::NSApplication::sharedApplication(mtm).run();
+    std::process::exit(0)
+}
+
 /// Whether we may tap input, without prompting.
 pub fn accessibility_granted() -> bool {
     unsafe { AXIsProcessTrustedWithOptions(std::ptr::null()) != 0 }
@@ -208,8 +237,8 @@ pub fn in_app_bundle() -> bool {
     std::env::current_exe().is_ok_and(|p| p.parent().is_some_and(|d| d.ends_with("Contents/MacOS")))
 }
 
-/// Ask macOS whether we may tap input; shows the system prompt the first time.
-pub fn accessibility_trusted() -> bool {
+/// Whether we may tap input, asking for it (the system prompt) if not yet granted.
+pub fn ask_for_accessibility() -> bool {
     unsafe {
         let keys = [kAXTrustedCheckOptionPrompt];
         let vals = [kCFBooleanTrue];
@@ -316,58 +345,3 @@ pub fn usage() -> (f64, f64) {
     (memory, t(u.ru_utime) + t(u.ru_stime))
 }
 
-pub fn awdl_active() -> Option<bool> {
-    let out = std::process::Command::new("/sbin/ifconfig").arg("awdl0").output().ok()?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    Some(s.contains("status: active"))
-}
-
-/// IPv4 broadcast addresses of the interfaces that are up.
-pub fn broadcast_addrs() -> Vec<std::net::IpAddr> {
-    let mut out = Vec::new();
-    unsafe {
-        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
-        if libc::getifaddrs(&mut ifap) != 0 {
-            return out;
-        }
-        let mut p = ifap;
-        while !p.is_null() {
-            let i = &*p;
-            let up = i.ifa_flags & (libc::IFF_UP as u32) != 0;
-            let bcast = i.ifa_flags & (libc::IFF_BROADCAST as u32) != 0;
-            if up && bcast && !i.ifa_addr.is_null() && (*i.ifa_addr).sa_family as i32 == libc::AF_INET && !i.ifa_dstaddr.is_null() {
-                let sin = &*(i.ifa_dstaddr as *const libc::sockaddr_in);
-                let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
-                if !ip.is_unspecified() && !out.contains(&std::net::IpAddr::V4(ip)) {
-                    out.push(std::net::IpAddr::V4(ip));
-                }
-            }
-            p = i.ifa_next;
-        }
-        libc::freeifaddrs(ifap);
-    }
-    out
-}
-
-/// Mark the socket as interactive voice: the Wi-Fi driver puts it in the WMM voice queue.
-pub fn set_voice_priority(sock: &std::net::UdpSocket) {
-    use std::os::fd::AsRawFd;
-    let fd = sock.as_raw_fd();
-    unsafe {
-        let vo: libc::c_int = 4; // NET_SERVICE_TYPE_VO
-        libc::setsockopt(fd, libc::SOL_SOCKET, 0x1116, &vo as *const _ as *const c_void, 4);
-        let tos: libc::c_int = 0xB8; // DSCP EF
-        libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_TOS, &tos as *const _ as *const c_void, 4);
-    }
-}
-
-pub fn host_name() -> String {
-    let mut buf = [0 as c_char; 256];
-    unsafe {
-        if libc::gethostname(buf.as_mut_ptr(), buf.len()) == 0 {
-            let s = CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned();
-            return s.trim_end_matches(".local").to_string();
-        }
-    }
-    "Mac".into()
-}

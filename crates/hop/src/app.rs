@@ -9,7 +9,7 @@
 //! current by finding, connecting to and following the paired PC.
 
 use crate::live::{self, Live, SignalsBlocked};
-use crate::{hud, login, macos, pc, prefs, updates};
+use crate::{login, macos, pc, prefs, updates};
 use hop_core::controller::ControllerConfig;
 use hop_core::layout::Side;
 use hop_core::link::{Found, Link};
@@ -81,9 +81,6 @@ impl Shared {
         std::thread::spawn(move || s.save_prefs());
     }
 
-    /// Write the newest settings. One writer at a time, each writing the newest settings, so the
-    /// last write always holds the latest state. A failed write only loses the choice at the next
-    /// launch.
     fn new(prefs: ControllerConfig, dir: PathBuf, conn: Conn, signals: SignalsBlocked) -> Arc<Shared> {
         Arc::new(Shared {
             prefs: Mutex::new(prefs),
@@ -96,6 +93,9 @@ impl Shared {
         })
     }
 
+    /// Write the newest settings. One writer at a time, each writing the newest settings, so the
+    /// last write always holds the latest state. A failed write only loses the choice at the next
+    /// launch.
     fn save_prefs(&self) {
         let _g = self.saving.lock().unwrap();
         let latest = self.prefs.lock().unwrap().clone();
@@ -105,8 +105,7 @@ impl Shared {
 
 pub fn run() -> ! {
     let signals = live::block_signals(); // before any thread starts
-    hud::init();
-    let mtm = MainThreadMarker::new().expect("the app runs on the main thread");
+    let mtm = macos::start_app(macos::AppKind::Background);
     let dir = pc::store().dir;
     let shared = Shared::new(prefs::load(&dir), dir, Conn::NeedsAccess, signals);
     let s = shared.clone();
@@ -114,7 +113,7 @@ pub fn run() -> ! {
     let menu = Menu::new(mtm, shared.clone());
     std::mem::forget(menu); // lives as long as the app
 
-    if macos::accessibility_trusted() {
+    if macos::ask_for_accessibility() {
         start_live(&shared);
     } else {
         let s = shared.clone();
@@ -127,7 +126,7 @@ pub fn run() -> ! {
     }
     let s = shared.clone();
     std::thread::spawn(move || supervise(&s));
-    hud::run()
+    macos::run_app()
 }
 
 /// Main thread, once Accessibility access is granted.
@@ -395,7 +394,7 @@ impl Menu {
             self.add(menu, &format!("Switch to {name}   ⌃⌥⌘{}", prefs.side.arrow()), Some(sel!(switchToPC:)));
             self.add(menu, &format!("Show {name}'s Screen"), Some(sel!(showScreen:)));
         }
-        let paired = !matches!(conn, Conn::NotPaired | Conn::NeedsAccess) || pc::store().peer().is_some();
+        let paired = pc::store().peer().is_some();
         let pair = if paired { "Pair with Another PC…".to_string() } else { format!("{MAC_PAIR_ITEM}…") };
         self.add(menu, &pair, Some(sel!(pairPC:)));
         if paired {
@@ -438,8 +437,7 @@ impl Menu {
 /// starting input capture or showing anything.
 #[cfg(feature = "dev-tools")]
 pub fn print_menus() {
-    let mtm = MainThreadMarker::new().expect("main thread");
-    hud::init();
+    let mtm = macos::start_app(macos::AppKind::Background);
     let states = [
         Conn::NeedsAccess,
         Conn::NotPaired,

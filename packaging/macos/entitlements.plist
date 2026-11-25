@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<!-- Hop is not sandboxed: it taps input (Accessibility) and talks UDP on the LAN.
-	     The hardened runtime needs no exceptions for that. -->
-</dict>
-</plist>

@@ -1,7 +1,7 @@
 //! The paired PC: pairing, forgetting, finding it and connecting to it. For the app and the
 //! command line alike; errors are sentences for the user.
 
-use crate::macos;
+use crate::net;
 use hop_core::crypto::PairError;
 use hop_core::link::{self, Found, Link};
 use hop_core::ui::PC_PAIR_ITEM;
@@ -36,12 +36,12 @@ pub fn store() -> MacStore {
 
 /// PCs running hop-agent on this network.
 pub fn discover() -> Result<Vec<Found>, String> {
-    link::discover(DEFAULT_PORT, &macos::broadcast_addrs(), DISCOVER_WAIT).map_err(|e| format!("could not search the network: {e}"))
+    link::discover(DEFAULT_PORT, &net::broadcast_addrs(), DISCOVER_WAIT).map_err(|e| format!("could not search the network: {e}"))
 }
 
 /// Where the paired PC is now: found by its key on the network, else where it answered last.
 pub fn locate(rec: &PcRecord) -> Option<SocketAddr> {
-    let found = link::discover(DEFAULT_PORT, &macos::broadcast_addrs(), LOCATE_WAIT).unwrap_or_default();
+    let found = link::discover(DEFAULT_PORT, &net::broadcast_addrs(), LOCATE_WAIT).unwrap_or_default();
     found.into_iter().find(|f| f.public == rec.public).map(|f| f.addr).or(rec.addr)
 }
 
@@ -51,7 +51,7 @@ pub fn pair_with(addr: SocketAddr, code: &str) -> Result<PcRecord, String> {
     let saving = |e: io::Error| format!("Could not save the pairing: {e}");
     let generation = store.lock().and_then(|mut l| l.new_generation()).map_err(saving)?; // unlocked during the handshake
     let keys = store.keys().map_err(|e| format!("cannot read or create this Mac's key in {}: {e}", store.dir.display()))?;
-    let p = link::pair(addr, &keys, code, &macos::host_name()).map_err(|e| match e {
+    let p = link::pair(addr, &keys, code, &net::host_name()).map_err(|e| match e {
         PairError::WrongCode => "That code is not right. Show a fresh one on the PC and try again.".to_string(),
         PairError::Io(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
             format!("The PC is not accepting pairing right now. Choose \"{PC_PAIR_ITEM}\" on the PC first.")
@@ -104,7 +104,7 @@ pub fn open(mut rec: PcRecord, addr: SocketAddr) -> Result<Pc, String> {
     let store = store();
     let keys = store.keys().map_err(|e| format!("cannot read this Mac's key in {}: {e}", store.dir.display()))?;
     let sock = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
-    macos::set_voice_priority(&sock);
+    net::set_voice_priority(&sock);
     let link = Arc::new(Link::new(sock, keys, rec.public, addr).map_err(|e| e.to_string())?);
     link.connect(CONNECT_TIMEOUT).map_err(|e| {
         format!("{} at {} did not answer ({e}). Is Hop running there, and is the firewall allowing it?", rec.name, addr.ip())

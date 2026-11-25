@@ -15,7 +15,7 @@ dev-tools = []
 hop-core = { path = "../hop-core" }
 libc = "0.2"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSPanel", "NSWindow", "NSView", "NSTextField", "NSControl", "NSColor", "NSFont", "NSScreen", "NSGraphics", "NSRunningApplication", "NSText", "NSBox", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSMenu", "NSMenuItem", "NSImage", "NSAlert", "NSPopUpButton", "NSWorkspace", "NSCell", "NSButtonCell", "NSUserInterfaceItemIdentification", "NSCell", "NSMenuItemCell", "NSPopUpButtonCell", "NSActionCell", "NSCursor", "objc2-core-foundation", "objc2-quartz-core"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSPanel", "NSWindow", "NSView", "NSTextField", "NSControl", "NSColor", "NSFont", "NSScreen", "NSGraphics", "NSRunningApplication", "NSText", "NSBox", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSMenu", "NSMenuItem", "NSImage", "NSAlert", "NSPopUpButton", "NSWorkspace", "NSCell", "NSButtonCell", "NSUserInterfaceItemIdentification", "NSMenuItemCell", "NSPopUpButtonCell", "NSActionCell", "NSCursor", "objc2-core-foundation", "objc2-quartz-core"] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVSampleBufferDisplayLayer", "AVSampleBufferVideoRenderer", "AVQueuedSampleBufferRendering", "AVAnimation", "objc2-core-media", "objc2-quartz-core"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFNumber", "CFBase"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGColor"] }

@@ -11,6 +11,7 @@ mod login;
 mod prefs;
 mod live;
 mod macos;
+mod net;
 mod pc;
 mod run;
 mod screen;

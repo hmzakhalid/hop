@@ -105,12 +105,8 @@ pub fn drive(host: Option<&str>) -> Result<(), String> {
 /// Play a recording (from `hop-capture`) in the screen viewer, the way the PC would stream it.
 pub fn view_file(path: &str) -> Result<(), String> {
     use hop_core::stream::{FileSource, Source};
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
     let mut source = FileSource::open(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
-    let mtm = MainThreadMarker::new().expect("main thread");
-    let app = NSApplication::sharedApplication(mtm);
-    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    let mtm = macos::start_app(macos::AppKind::Window);
     let (window, mut decoder) = view::Window::open(mtm, path, 1920, 1080, || std::process::exit(0));
     println!("Playing {path} at {} fps.", hop_core::video::MAX_FPS);
     std::thread::spawn(move || {
@@ -130,16 +126,15 @@ pub fn view_file(path: &str) -> Result<(), String> {
     });
     exit_after("HOP_VIEW_SECONDS", None);
     let _window = window;
-    app.run();
-    Ok(())
+    macos::run_app()
 }
 
 /// Show the indicator for a few seconds.
 pub fn badge(side: Side) -> Result<(), String> {
-    hud::init();
+    macos::start_app(macos::AppKind::Background);
     hud::show(&hud::badge_text("PC", side));
     exit_after("HOP_BADGE_SECONDS", Some(3));
-    hud::run()
+    macos::run_app()
 }
 
 /// Exit after `$var` seconds (or `default`), for previews and screenshots.

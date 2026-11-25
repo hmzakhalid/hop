@@ -2,12 +2,12 @@
 
 use crate::cli::RunOptions;
 use crate::live::{self, Live};
-use crate::{hud, macos, pc};
+use crate::{macos, pc};
 use hop_core::link::Event;
 
 pub fn run(host: Option<&str>, o: &RunOptions) -> Result<(), String> {
     let signals = live::block_signals(); // before any thread starts
-    if !macos::accessibility_trusted() {
+    if !macos::ask_for_accessibility() {
         return Err("hop needs Accessibility access to read the keyboard and trackpad.\n\
              Open System Settings → Privacy & Security → Accessibility, turn on the app you run hop from\n\
              (Terminal, iTerm, …), then run hop again."
@@ -16,7 +16,7 @@ pub fn run(host: Option<&str>, o: &RunOptions) -> Result<(), String> {
     let pc = pc::connect(host)?;
     let (side, edges, win) = (o.cfg.side, o.cfg.edges, o.cfg.map.win_key());
 
-    hud::init();
+    macos::start_app(macos::AppKind::Background);
     let live = Live::start(signals, o.verbose)?;
     let verbose = o.verbose;
     live.connect(pc.link.clone(), &pc.name, o.cfg.clone(), move |e| match e {
@@ -35,5 +35,5 @@ pub fn run(host: Option<&str>, o: &RunOptions) -> Result<(), String> {
         println!("Or push the pointer off the {} edge of this screen, and off the PC's {} edge to come back.", side.name(), side.opposite().name());
     }
     println!("On the PC, {win} is the Windows key ({win}L = Win+L). Ctrl+C quits.");
-    hud::run()
+    macos::run_app()
 }

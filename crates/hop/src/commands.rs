@@ -2,7 +2,7 @@
 //! `hop view`. Each returns an error sentence for `main` to print.
 
 use crate::cli::prompt;
-use crate::{hud, macos, pc, screen};
+use crate::{macos, net, pc, screen};
 use hop_core::clock::now_us;
 use hop_core::crypto::fingerprint;
 use hop_core::link::Event;
@@ -80,7 +80,7 @@ pub fn bench(host: Option<&str>, n: usize) -> Result<(), String> {
         s.p50, s.p90, s.p99, s.p999, s.max
     );
     println!("One way is about half of that; Hop itself adds about 0.1 ms per side.");
-    if macos::awdl_active() == Some(true) {
+    if net::awdl_active() == Some(true) {
         println!("Tip: AWDL (AirDrop/Handoff) is active and causes periodic Wi-Fi spikes. Compare after `sudo ifconfig awdl0 down` (undo: `sudo ifconfig awdl0 up`).");
     }
     Ok(())
@@ -89,9 +89,7 @@ pub fn bench(host: Option<&str>, n: usize) -> Result<(), String> {
 /// Watch the paired PC's screen in a window (no keyboard or mouse control), until it closes.
 pub fn view(host: Option<&str>) -> Result<(), String> {
     let (rec, addr) = pc::target(host)?;
-    hud::init();
-    let mtm = objc2::MainThreadMarker::new().expect("main thread");
-    objc2_app_kit::NSApplication::sharedApplication(mtm).setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Regular);
+    let mtm = macos::start_app(macos::AppKind::Window);
     screen::open(mtm, screen::Target { name: rec.name, addr, public: rec.public }, None, || std::process::exit(0));
-    hud::run()
+    macos::run_app()
 }
