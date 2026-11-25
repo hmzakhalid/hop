@@ -120,8 +120,8 @@ pub fn serve(
                 }
                 Datagram::Handled | Datagram::Other => {}
             }
-            if !watching {
-                break; // idle: one packet per poll is plenty
+            if !(watching && source.is_some()) {
+                break; // blocking receives (see above): one per pass, so a stream of packets can't hold the loop
             }
         }
 

@@ -6,11 +6,11 @@ fn main() {
     let git = |args: &[&str]| {
         std::process::Command::new("git").args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    // Rerun when the commit may have changed. HEAD and its log exist in every checkout and
-    // worktree (a missing watched file would rebuild everything every time), and the log
-    // changes on every commit, checkout and reset.
-    for f in ["HEAD", "logs/HEAD"] {
-        if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", f]) {
+    // Rerun when the commit may have changed: HEAD, the branch refs (a directory, which catches
+    // a new loose ref too), packed refs and HEAD's log. Only files that exist are watched: Cargo
+    // reruns every build for a missing one.
+    for f in ["HEAD", "refs/heads", "packed-refs", "logs/HEAD"] {
+        if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", f]).filter(|p| std::path::Path::new(p).exists()) {
             println!("cargo:rerun-if-changed={path}");
         }
     }

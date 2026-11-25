@@ -333,12 +333,13 @@ pub fn pair_beside_service(name: Option<String>, port: u16) -> Result<(), String
         return Err(format!("{} is missing; run hop-agent install again", store.dir.display()));
     }
     let keys = store.keys().map_err(|e| format!("cannot read the service's key in {}: {e}", store.dir.display()))?;
-    // A generation for this pairing: an Unpair (or another pairing) meanwhile replaces it, and
-    // then this one must not save.
-    let generation = store.lock().and_then(|mut l| l.new_generation()).map_err(|e| format!("{}: {e}", store.dir.display()))?;
     let name = name.unwrap_or_else(computer_name);
     let listener = std::net::TcpListener::bind(std::net::SocketAddr::from(([0, 0, 0, 0], port)))
         .map_err(|e| format!("cannot listen for pairing on port {port}: {e}"))?;
+    // A generation for this pairing: an Unpair (or another pairing) meanwhile replaces it, and
+    // then this one must not save. Taken once the port is ours, so a second attempt that cannot
+    // listen leaves a pairing already under way alone.
+    let generation = store.lock().and_then(|mut l| l.new_generation()).map_err(|e| format!("{}: {e}", store.dir.display()))?;
     let code = new_pairing_code();
     println!("{}", pairing_banner(&code));
     let stop = Arc::new(AtomicBool::new(false));
