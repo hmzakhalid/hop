@@ -187,7 +187,7 @@ fn supervise(shared: &Shared) {
                     continue;
                 }
                 next_try = Instant::now() + RETRY;
-                match pc::locate(&rec, Duration::from_millis(600)) {
+                match pc::locate(&rec) {
                     Some(a) if a != c.link.peer() => {}
                     _ => continue,
                 }
@@ -200,8 +200,8 @@ fn supervise(shared: &Shared) {
         }
         next_try = Instant::now() + RETRY;
         shared.set_conn(Conn::Looking(rec.name.clone()));
-        let Some(addr) = pc::locate(&rec, Duration::from_millis(600)) else { continue };
-        match pc::open(rec.clone(), addr, Duration::from_secs(3)) {
+        let Some(addr) = pc::locate(&rec) else { continue };
+        match pc::open(rec.clone(), addr) {
             Err(_) => shared.set_conn(Conn::Unreachable(rec.name.clone())),
             Ok(_) if !pc::still_paired(&rec.public) => {} // forgotten or replaced meanwhile
             Ok(pc) => {
@@ -522,7 +522,7 @@ fn open_url(url: &str) {
 /// Search the network (off the main thread), then ask which PC and for its code.
 fn search_then_pair() {
     std::thread::spawn(|| {
-        let found = pc::discover(Duration::from_millis(1200));
+        let found = pc::discover();
         macos::on_main(move || ask_to_pair(found));
     });
 }

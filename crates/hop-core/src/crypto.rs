@@ -208,6 +208,11 @@ impl Session {
     }
 }
 
+/// 128 random bits, for names and tokens nobody may guess.
+pub fn random_u128() -> u128 {
+    rand::random()
+}
+
 fn random_index() -> u32 {
     rand::thread_rng().next_u32() | 1
 }

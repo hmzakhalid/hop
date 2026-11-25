@@ -122,17 +122,57 @@ impl<R: Record> Store<R> {
         R::from_kv(&read_kv(&self.dir.join(R::FILE)).ok()??)
     }
 
+    /// Take the lock under which the pairing changes. Every process using this folder shares it
+    /// (an OS file lock on `pairing.lock`, released when the guard drops), so the app and the
+    /// command line, or the console agent and the service, never interleave a change.
+    pub fn lock(&self) -> io::Result<PairingLock<'_, R>> {
+        fs::create_dir_all(&self.dir)?;
+        let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(self.dir.join("pairing.lock"))?;
+        file.lock()?;
+        Ok(PairingLock { store: self, _file: file })
+    }
+}
+
+/// Held while the pairing changes; see [`Store::lock`].
+///
+/// It also keeps a generation: a random token replaced by every pairing that starts and every
+/// Forget, so a pairing that finishes after a newer change (in any process) knows it was
+/// superseded. The token is random and replaced atomically, so neither a crash mid-write nor a
+/// lost file can bring back an old one.
+pub struct PairingLock<'a, R: Record> {
+    store: &'a Store<R>,
+    _file: fs::File,
+}
+
+impl<R: Record> PairingLock<'_, R> {
     pub fn save_peer(&self, r: &R) -> io::Result<()> {
-        write_kv(&self.dir.join(R::FILE), &r.to_kv())
+        write_kv(&self.store.dir.join(R::FILE), &r.to_kv())
     }
 
-    /// Forget the peer. `Ok(false)` if there was none.
-    pub fn forget_peer(&self) -> io::Result<bool> {
-        match fs::remove_file(self.dir.join(R::FILE)) {
+    /// Forget the peer, and start a new generation. `Ok(false)` if there was no peer.
+    pub fn forget_peer(&mut self) -> io::Result<bool> {
+        self.new_generation()?;
+        match fs::remove_file(self.store.dir.join(R::FILE)) {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    /// The current generation; `None` if missing or unreadable (never equal to an issued one).
+    pub fn generation(&self) -> Option<String> {
+        read_kv(&self.generation_file()).ok().flatten()?.get("token").cloned()
+    }
+
+    /// Start a new generation; returns its token.
+    pub fn new_generation(&mut self) -> io::Result<String> {
+        let token = format!("{:032x}", crate::crypto::random_u128());
+        write_kv(&self.generation_file(), &BTreeMap::from([("token", token.clone())]))?;
+        Ok(token)
+    }
+
+    fn generation_file(&self) -> PathBuf {
+        self.store.dir.join("pairing.generation")
     }
 }
 
@@ -227,16 +267,16 @@ mod tests {
         let (from, to) = (AgentStore::new(tmp("adopt-from")), AgentStore::new(tmp("adopt-to")));
         fs::create_dir_all(&to.dir).unwrap();
         let theirs = from.keys().unwrap();
-        from.save_peer(&MacRecord { public: [1; 32], name: "Old Mac".into() }).unwrap();
+        from.lock().unwrap().save_peer(&MacRecord { public: [1; 32], name: "Old Mac".into() }).unwrap();
         assert!(to.adopt(&from).unwrap(), "an empty store takes the identity");
         assert_eq!(to.keys().unwrap().public, theirs.public);
         assert_eq!(to.peer().unwrap().name, "Old Mac");
 
-        to.save_peer(&MacRecord { public: [2; 32], name: "New Mac".into() }).unwrap();
+        to.lock().unwrap().save_peer(&MacRecord { public: [2; 32], name: "New Mac".into() }).unwrap();
         let _ = fs::remove_dir_all(&from.dir);
         let other = AgentStore::new(tmp("adopt-other"));
         other.keys().unwrap();
-        other.save_peer(&MacRecord { public: [3; 32], name: "Stale Mac".into() }).unwrap();
+        other.lock().unwrap().save_peer(&MacRecord { public: [3; 32], name: "Stale Mac".into() }).unwrap();
         assert!(!to.adopt(&other).unwrap(), "a store with its own identity keeps it");
         assert_eq!(to.keys().unwrap().public, theirs.public);
         assert_eq!(to.peer().unwrap().name, "New Mac");
@@ -246,15 +286,28 @@ mod tests {
     }
 
     #[test]
+    fn every_forget_starts_a_new_generation() {
+        let s = MacStore::new(tmp("generation"));
+        let mut lock = s.lock().unwrap();
+        assert_eq!(lock.generation(), None);
+        let pairing = lock.new_generation().unwrap();
+        assert_eq!(lock.generation().as_deref(), Some(pairing.as_str()));
+        lock.forget_peer().unwrap();
+        assert_ne!(lock.generation().as_deref(), Some(pairing.as_str()), "a pairing that started before a Forget is stale");
+        drop(lock);
+        fs::remove_dir_all(&s.dir).unwrap();
+    }
+
+    #[test]
     fn peer_records_round_trip_and_forget() {
         let dir = tmp("peer");
         let s = MacStore::new(dir.clone());
         assert_eq!(s.peer(), None);
         let r = PcRecord { public: [7; 32], name: "Desk PC".into(), addr: Some("192.168.1.9:47820".parse().unwrap()) };
-        s.save_peer(&r).unwrap();
+        s.lock().unwrap().save_peer(&r).unwrap();
         assert_eq!(s.peer(), Some(r));
-        assert!(s.forget_peer().unwrap());
-        assert!(!s.forget_peer().unwrap());
+        assert!(s.lock().unwrap().forget_peer().unwrap());
+        assert!(!s.lock().unwrap().forget_peer().unwrap());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

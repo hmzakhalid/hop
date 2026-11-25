@@ -236,7 +236,7 @@ fn serve(role: Role, opts: RunOptions, store: AgentStore, log: &Arc<Log>) -> Res
         AgentEvent::Listening(a) => ev_log.say(format!("Listening on {a}.")),
         AgentEvent::Paired(p) => {
             let rec = MacRecord { public: p.public, name: p.name.clone() };
-            match store.save_peer(&rec) {
+            match store.lock().and_then(|l| l.save_peer(&rec)) {
                 Ok(()) => ev_log.say(format!("Paired with {} (key {}).", p.name, fingerprint(&p.public))),
                 Err(e) => ev_log.say(format!("Paired with {}, but saving failed: {e}", p.name)),
             }

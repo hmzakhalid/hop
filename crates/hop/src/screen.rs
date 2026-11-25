@@ -240,17 +240,3 @@ fn follow_cursor(live: &'static Live, viewer: Viewer, local: Arc<AtomicBool>) {
         }
     });
 }
-
-/// `hop view`: watch the paired PC's screen from a terminal (no keyboard or mouse control).
-pub fn view_cli(host: Option<&str>) -> ! {
-    let rec = pc::store().peer().unwrap_or_else(|| crate::cli::die("not paired yet. Pair first (hop pair)."));
-    let addr = match host {
-        Some(h) => pc::parse_host(h),
-        None => pc::locate(&rec, Duration::from_millis(600)).unwrap_or_else(|| crate::cli::die(format!("cannot find {} on the network", rec.name))),
-    };
-    crate::hud::init();
-    let mtm = MainThreadMarker::new().expect("main thread");
-    objc2_app_kit::NSApplication::sharedApplication(mtm).setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Regular);
-    open(mtm, Target { name: rec.name, addr, public: rec.public }, None, || std::process::exit(0));
-    crate::hud::run()
-}

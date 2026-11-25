@@ -2,6 +2,7 @@
 
 mod app;
 mod cli;
+mod commands;
 mod cursor;
 #[cfg(feature = "dev-tools")]
 mod devtools;
@@ -13,7 +14,6 @@ mod macos;
 mod pc;
 mod run;
 mod screen;
-mod tools;
 mod updates;
 mod view;
 
@@ -36,22 +36,24 @@ fn main() {
             std::process::exit(2);
         }
     };
-    match cmd {
+    let result = match cmd {
         Command::App => app::run(),
         Command::Run { host, opts } => run::run(host.as_deref(), &opts),
-        Command::Pair { host } => pc::pair(host.as_deref()),
-        Command::Bench { host, count } => tools::bench(host.as_deref(), count),
-        Command::Unpair => pc::unpair(),
+        Command::Pair { host } => commands::pair(host.as_deref()),
+        Command::Bench { host, count } => commands::bench(host.as_deref(), count),
+        Command::Unpair => commands::unpair(),
+        Command::View { host } => commands::view(host.as_deref()),
         #[cfg(feature = "dev-tools")]
         Command::Drive { host } => devtools::drive(host.as_deref()),
-        Command::View { host, file: None } => screen::view_cli(host.as_deref()),
         #[cfg(feature = "dev-tools")]
-        Command::View { file: Some(f), .. } => devtools::view_file(&f),
-        #[cfg(not(feature = "dev-tools"))]
-        Command::View { file: Some(_), .. } => cli::die("playing a recording is a developer tool"),
+        Command::Play { file } => devtools::view_file(&file),
         #[cfg(feature = "dev-tools")]
         Command::Badge { side } => devtools::badge(side),
         #[cfg(feature = "dev-tools")]
-        Command::Menu => app::print_menus(),
+        Command::Menu => Ok(app::print_menus()),
+    };
+    if let Err(e) = result {
+        eprintln!("hop: {e}");
+        std::process::exit(1);
     }
 }

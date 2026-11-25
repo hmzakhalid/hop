@@ -297,7 +297,7 @@ pub fn revoke_service_pairing() -> Result<bool, String> {
     if !is_elevated() {
         return Err("the Hop service still holds the pairing; run `hop-agent unpair` as administrator to revoke it".into());
     }
-    store.forget_peer().map_err(|e| format!("{}: {e}", store.dir.display()))?;
+    store.lock().and_then(|mut l| l.forget_peer()).map_err(|e| format!("{}: {e}", store.dir.display()))?;
     if installed {
         restart_service().map_err(|e| format!("the pairing is revoked, but {e}; the old pairing may still be active until it restarts"))?;
     }
@@ -326,7 +326,10 @@ pub fn pair_beside_service(name: Option<String>, port: u16) -> Result<(), String
     crate::platform::on_ctrl_c(stop.clone());
     let paired = agent::pair(listener, &PairingWindow::new(code), &keys, &name, &stop, |why| println!("Pairing attempt failed: {why}"));
     let Some(p) = paired else { return Err("no Mac paired before the code expired".into()) };
-    store.save_peer(&MacRecord { public: p.public, name: p.name.clone() }).map_err(|e| format!("paired, but saving failed: {e}"))?;
+    store
+        .lock()
+        .and_then(|l| l.save_peer(&MacRecord { public: p.public, name: p.name.clone() }))
+        .map_err(|e| format!("paired, but saving failed: {e}"))?;
     println!("Paired with {} (key {}).", p.name, fingerprint(&p.public));
     restart_service().map_err(|e| format!("paired, but {e}"))?;
     println!("The Hop service is using the new pairing.");
@@ -490,7 +493,7 @@ fn new_stop_event() -> Option<(HANDLE, String)> {
         let sa = SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: sd, bInheritHandle: 0 };
         let mut result = None;
         for _ in 0..4 {
-            let name = format!("{STOP_EVENT_PREFIX}{:032x}", rand_u128());
+            let name = format!("{STOP_EVENT_PREFIX}{:032x}", hop_core::crypto::random_u128());
             let w = wide(&name);
             let h = CreateEventW(&sa, 1, 0, w.as_ptr());
             if h.is_null() {
@@ -506,14 +509,6 @@ fn new_stop_event() -> Option<(HANDLE, String)> {
         LocalFree(sd as _);
         result
     }
-}
-
-/// 128 random bits from the OS generator (via a throwaway X25519 key).
-fn rand_u128() -> u128 {
-    let mut b = [0u8; 16];
-    let k = hop_core::crypto::StaticKeys::generate();
-    b.copy_from_slice(&k.public[..16]);
-    u128::from_le_bytes(b)
 }
 
 /// The helper's exit code, or `None` while it runs.

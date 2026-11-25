@@ -1,7 +1,6 @@
 //! Developer tools, left out of packaged builds (`--no-default-features`): `hop drive`,
 //! `hop view --file`, `hop badge`.
 
-use crate::cli::die;
 use crate::{hud, macos, pc, view};
 use hop_core::controller::{Controller, ControllerConfig, Output};
 use hop_core::keymap::{mac, MacMod};
@@ -13,8 +12,8 @@ use std::time::Duration;
 
 /// A scripted session through the real controller and session, without the event tap. Run the
 /// agent with `--swallow` so nothing is typed on the PC.
-pub fn drive(host: Option<&str>) {
-    let pc = pc::connect(host);
+pub fn drive(host: Option<&str>) -> Result<(), String> {
+    let pc = pc::connect(host)?;
     let ctl = Controller::new(ControllerConfig::default(), macos::displays());
     let session = Session::new(ctl, pc.link.clone(), Arc::new(NoEffects));
     let stop = Arc::new(AtomicBool::new(false));
@@ -22,7 +21,7 @@ pub fn drive(host: Option<&str>) {
     let asked = std::time::Instant::now();
     while session.read(|c| c.pc_monitors().is_empty()) {
         if asked.elapsed() > Duration::from_secs(3) {
-            die(format!("{} did not answer", pc.name));
+            return Err(format!("{} did not answer", pc.name));
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -49,7 +48,7 @@ pub fn drive(host: Option<&str>) {
     session.act(|c, t| c.key(t, mac::RIGHT, true, false, held, (100.0, 100.0)));
     std::thread::sleep(Duration::from_millis(150));
     if !session.read(|c| c.is_remote()) {
-        die("could not take control with ⌃⌥⌘→");
+        return Err("could not take control with ⌃⌥⌘→".into());
     }
     println!("  entered   with ⌃⌥⌘→ (the held ⌃⌥⌘ must not reach the PC)");
     act(&|c, t| c.key(t, mac::RIGHT, false, false, held, (0.0, 0.0)));
@@ -100,15 +99,16 @@ pub fn drive(host: Option<&str>) {
         println!("round trip over {} acks: p50 {:.2} ms, p99 {:.2} ms, max {:.2} ms", r.count, r.p50, r.p99, r.max);
     }
     stop.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 /// Play a recorded H.264 file (from `hop-capture`) in the screen viewer.
-pub fn view_file(path: &str) -> ! {
+pub fn view_file(path: &str) -> Result<(), String> {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
-    let data = std::fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
+    let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     let frames = hop_core::h264::access_units(&data);
-    let (w, h) = frames.iter().find_map(|f| view::dimensions(f, false)).unwrap_or_else(|| die("no keyframe in the file"));
+    let (w, h) = frames.iter().find_map(|f| view::dimensions(f, false)).ok_or("no keyframe in the file")?;
     let mtm = MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
@@ -126,11 +126,11 @@ pub fn view_file(path: &str) -> ! {
     exit_after("HOP_VIEW_SECONDS", None);
     let _window = window;
     app.run();
-    std::process::exit(0)
+    Ok(())
 }
 
 /// Show the indicator for a few seconds.
-pub fn badge(side: Side) -> ! {
+pub fn badge(side: Side) -> Result<(), String> {
     hud::init();
     hud::show(&hud::badge_text("PC", side));
     exit_after("HOP_BADGE_SECONDS", Some(3));

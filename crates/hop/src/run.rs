@@ -1,26 +1,25 @@
 //! `hop run`: connect to the paired PC from a terminal and run until Ctrl+C.
 
-use crate::cli::{die, RunOptions};
+use crate::cli::RunOptions;
 use crate::live::{self, Live};
 use crate::{hud, macos, pc};
 use hop_core::controller::Controller;
 use hop_core::link::Event;
 use hop_core::session::Session;
 
-pub fn run(host: Option<&str>, o: &RunOptions) -> ! {
+pub fn run(host: Option<&str>, o: &RunOptions) -> Result<(), String> {
     let signals = live::block_signals(); // before any thread starts
     if !macos::accessibility_trusted() {
-        die(
-            "hop needs Accessibility access to read the keyboard and trackpad.\n\
+        return Err("hop needs Accessibility access to read the keyboard and trackpad.\n\
              Open System Settings → Privacy & Security → Accessibility, turn on the app you run hop from\n\
-             (Terminal, iTerm, …), then run hop again.",
-        );
+             (Terminal, iTerm, …), then run hop again."
+            .into());
     }
-    let pc = pc::connect(host);
+    let pc = pc::connect(host)?;
     let (side, edges, win) = (o.cfg.side, o.cfg.edges, o.cfg.map.win_key());
 
     hud::init();
-    let live = Live::start(signals, o.verbose).unwrap_or_else(|e| die(e));
+    let live = Live::start(signals, o.verbose)?;
     let session = Session::new(Controller::new(o.cfg.clone(), macos::displays()), pc.link.clone(), live.effects(&pc.name, side));
     let verbose = o.verbose;
     live.attach(session, move |e| match e {

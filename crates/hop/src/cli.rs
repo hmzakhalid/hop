@@ -89,8 +89,11 @@ pub enum Command {
     /// A scripted session through the real controller (agent in `--swallow` mode).
     #[cfg(feature = "dev-tools")]
     Drive { host: Option<String> },
-    /// Watch the PC's screen; with `file` (developer tool), play a recording instead.
-    View { host: Option<String>, file: Option<String> },
+    /// Watch the PC's screen.
+    View { host: Option<String> },
+    /// Play a recording in the viewer (`hop view --file F`).
+    #[cfg(feature = "dev-tools")]
+    Play { file: String },
     /// Preview the indicator badge.
     #[cfg(feature = "dev-tools")]
     Badge { side: Side },
@@ -123,7 +126,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, ParseErr
     let mut word = Word::Run;
     let mut host = None;
     let mut count = None;
-    let mut file = None;
+    #[cfg(feature = "dev-tools")]
+    let mut file: Option<String> = None;
     let mut run = RunOptions { cfg: ControllerConfig::default(), verbose: false, stats: false };
     let (mut run_flags, mut side_given) = (false, false);
     let number = |v: Option<String>, name: &str| -> Result<f64, String> {
@@ -137,6 +141,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, ParseErr
         match a.as_str() {
             "--host" => host = Some(it.next().ok_or("--host needs an address")?),
             "--count" => count = Some(it.next().and_then(|v| v.parse().ok()).filter(|n| *n >= 10).ok_or("--count needs a number of at least 10")?),
+            #[cfg(feature = "dev-tools")]
             "--file" => file = Some(it.next().ok_or("--file needs a path")?),
             "--side" => (run.cfg.side, side_given) = (it.next().ok_or("--side needs a value")?.parse()?, true),
             "--edges" => (run.cfg.edges, run_flags) = (true, true),
@@ -153,6 +158,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, ParseErr
     let name = WORDS.iter().find(|(_, w)| *w == word).map_or("run", |(n, _)| n);
     let only = |ok: bool, what: &str| if ok { Ok(()) } else { Err(format!("`hop {name}` does not take {what}")) };
     only(name == "bench" || count.is_none(), "--count")?;
+    #[cfg(feature = "dev-tools")]
     only(name == "view" || file.is_none(), "--file")?;
     only(name == "run" || !run_flags, "run options")?;
     only(matches!(name, "run" | "badge") || !side_given, "--side")?;
@@ -165,17 +171,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, ParseErr
         Word::Unpair => Command::Unpair,
         #[cfg(feature = "dev-tools")]
         Word::Drive => Command::Drive { host },
-        Word::View => Command::View { host, file },
+        #[cfg(feature = "dev-tools")]
+        Word::View if file.is_some() => Command::Play { file: file.unwrap() },
+        Word::View => Command::View { host },
         #[cfg(feature = "dev-tools")]
         Word::Badge => Command::Badge { side: run.cfg.side },
         #[cfg(feature = "dev-tools")]
         Word::Menu => Command::Menu,
     })
-}
-
-pub fn die(msg: impl std::fmt::Display) -> ! {
-    eprintln!("hop: {msg}");
-    std::process::exit(1)
 }
 
 pub fn prompt(q: &str) -> String {
@@ -202,7 +205,7 @@ mod tests {
         assert!(p("run --count 5").is_err());
         assert!(p("pair --edges").is_err());
         assert!(p("unpair --host 1.2.3.4").is_err());
-        assert!(matches!(p("view").unwrap(), Command::View { host: None, file: None }));
+        assert!(matches!(p("view").unwrap(), Command::View { host: None }));
         assert!(p("--speed 0").is_err());
         #[cfg(feature = "dev-tools")]
         assert!(matches!(p("badge --side left").unwrap(), Command::Badge { side: Side::Left }));

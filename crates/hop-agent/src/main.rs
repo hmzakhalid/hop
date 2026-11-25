@@ -35,7 +35,7 @@ fn pair(opts: RunOptions) -> Result<(), String> {
 }
 
 fn unpair() -> Result<(), String> {
-    let forgot = Role::Console.store().forget_peer().map_err(|e| e.to_string())?;
+    let forgot = Role::Console.store().lock().and_then(|mut l| l.forget_peer()).map_err(|e| e.to_string())?;
     println!("{}", if forgot { "Forgot the paired Mac." } else { "No Mac was paired." });
     #[cfg(windows)]
     if service::revoke_service_pairing()? {
