@@ -22,6 +22,7 @@ pub mod win {
     pub const RIGHT: u16 = 0x014D;
     pub const UP: u16 = 0x0148;
     pub const DOWN: u16 = 0x0150;
+    pub const L: u16 = 0x0026;
 
     pub fn is_modifier(c: u16) -> bool {
         matches!(c, LCTRL | RCTRL | LSHIFT | RSHIFT | LALT | RALT | LWIN | RWIN)
@@ -186,7 +187,7 @@ pub fn mac_to_win(code: u16) -> Option<u16> {
         0x22 => 0x17, // I
         0x23 => 0x19, // P
         0x24 => 0x1C, // Return
-        0x25 => 0x26, // L
+        0x25 => win::L,
         0x26 => 0x24, // J
         0x27 => 0x28, // '
         0x28 => 0x25, // K

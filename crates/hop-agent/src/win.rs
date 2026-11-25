@@ -1,5 +1,6 @@
 //! Windows input injection with `SendInput`.
 
+use crate::lock::{LockKey, Step};
 use hop_core::agent::Platform;
 use hop_core::keymap::win;
 use hop_core::receiver::Injector;
@@ -30,9 +31,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 /// Unassigned virtual key used to keep Alt/Win releases from opening menus (AutoHotkey's choice).
 pub(crate) const VK_MASK: u16 = 0xE8;
-
-/// The L key (set-1 scan code).
-const KEY_L: u16 = 0x0026;
 
 /// Marks Hop's own injected input (`dwExtraInfo`), so test hooks catch only ours.
 pub const HOP_TAG: usize = 0x484F_5021;
@@ -121,6 +119,7 @@ pub struct WinPlatform {
     pointer: ShowPointer,
     /// Windows keys Hop holds down (bit 0 left, bit 1 right).
     win_held: u8,
+    lock_key: LockKey,
     /// Win+L calls `LockWorkStation`. Off in swallow mode, where injected input must only be
     /// caught and printed.
     pub lock_directly: bool,
@@ -154,6 +153,7 @@ impl WinPlatform {
             virt: (0, 0, 1, 1),
             pointer: ShowPointer::new(),
             win_held: 0,
+            lock_key: LockKey::default(),
             lock_directly: true,
             follow: false,
             desk: std::ptr::null_mut(),
@@ -254,12 +254,18 @@ impl Injector for WinPlatform {
         if !down {
             self.win_held &= !bit;
         }
-        // Windows ignores an injected Win+L (locking answers only a real keyboard), so lock
-        // directly. The mask tap keeps the Win release from opening Start afterwards.
-        if c == KEY_L && down && self.win_held != 0 && self.lock_directly {
-            self.mask_key();
-            if unsafe { LockWorkStation() } != 0 {
-                return true;
+        if self.lock_directly {
+            match self.lock_key.step(c, down, self.win_held != 0) {
+                Step::Drop => return true,
+                // The mask tap keeps the Win release from opening Start afterwards.
+                Step::Lock => {
+                    self.mask_key();
+                    if unsafe { LockWorkStation() } != 0 {
+                        self.lock_key.locked();
+                        return true;
+                    }
+                }
+                Step::Send => {}
             }
         }
         let up = if down { 0 } else { KEYEVENTF_KEYUP };

@@ -3,6 +3,8 @@
 //! Off Windows it builds with a dry-run injector that prints what it would do.
 
 mod dryrun;
+#[cfg(any(windows, test))]
+mod lock;
 mod platform;
 mod role;
 #[cfg(windows)]
