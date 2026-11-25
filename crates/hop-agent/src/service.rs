@@ -130,7 +130,7 @@ pub fn install(console: &AgentStore) -> Result<(), String> {
 
     std::fs::create_dir_all(exe.parent().unwrap()).map_err(|e| format!("{}: {e}", exe.display()))?;
     // The installer already put us there (possibly spelled differently): never copy onto ourselves.
-    let already_there = matches!((me.canonicalize(), exe.canonicalize()), (Ok(a), Ok(b)) if a == b);
+    let already_there = is_running(&exe);
     if !already_there {
         std::fs::copy(&me, &exe).map_err(|e| format!("copying to {}: {e}", exe.display()))?;
     }
@@ -166,6 +166,17 @@ pub fn install(console: &AgentStore) -> Result<(), String> {
 
 /// Replace the firewall rule with one allowing `program`, or just remove it. True on success;
 /// an absent rule is not a failure.
+/// `s` as a single-quoted PowerShell string.
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Whether this process runs `exe` (however the path is spelled).
+fn is_running(exe: &Path) -> bool {
+    let me = std::env::current_exe().and_then(|m| m.canonicalize());
+    matches!((me, exe.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
 fn set_firewall_rule(program: Option<&Path>) -> bool {
     let mut script = format!(
         "$r = Get-NetFirewallRule -DisplayName '{DISPLAY_NAME}' -ErrorAction SilentlyContinue; \
@@ -173,8 +184,8 @@ fn set_firewall_rule(program: Option<&Path>) -> bool {
     );
     if let Some(p) = program {
         script += &format!(
-            "New-NetFirewallRule -DisplayName '{DISPLAY_NAME}' -Direction Inbound -Action Allow -Program '{}' -Profile Any -ErrorAction Stop | Out-Null; ",
-            p.display()
+            "New-NetFirewallRule -DisplayName '{DISPLAY_NAME}' -Direction Inbound -Action Allow -Program {} -Profile Any -ErrorAction Stop | Out-Null; ",
+            ps_quote(&p.display().to_string())
         );
     }
     // A failure above stops the script with exit code 1 before this.
@@ -227,11 +238,12 @@ fn delete_service() -> Result<bool, String> {
 /// True if `path` and everything directly in it are owned by SYSTEM or Administrators and grant
 /// access to nobody else.
 fn private_dir_is_safe(path: &Path) -> bool {
-    let p = path.display().to_string().replace('\'', "''");
-    // Any error at all (unreadable item, unreadable ACL, unresolvable SID) counts as unsafe.
+    let p = ps_quote(&path.display().to_string());
+    // Any error at all (unreadable item, unreadable ACL, unresolvable SID) counts as unsafe. The
+    // two accounts are PRIVATE_SDDL's SY and BA.
     let script = format!(
         "$ErrorActionPreference='Stop'; try {{ $ok=@('S-1-5-18','S-1-5-32-544'); \
-         $items=@(Get-Item -LiteralPath '{p}' -Force) + @(Get-ChildItem -LiteralPath '{p}' -Force); \
+         $items=@(Get-Item -LiteralPath {p} -Force) + @(Get-ChildItem -LiteralPath {p} -Force); \
          foreach($i in $items){{ if($i.Attributes -band [IO.FileAttributes]::ReparsePoint){{ throw 'reparse point' }}; \
          $a=Get-Acl -LiteralPath $i.FullName; if($null -eq $a){{ throw 'no ACL' }}; \
          if($ok -notcontains $a.GetOwner([Security.Principal.SecurityIdentifier]).Value){{ throw 'owner' }}; \
@@ -255,8 +267,7 @@ fn prepare_private_dir(path: &Path) -> Result<(), String> {
         if private_dir_is_safe(path) {
             return Ok(());
         }
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let aside = path.with_file_name(format!("Hop.unsafe-{secs}"));
+        let aside = path.with_file_name(format!("Hop.unsafe-{}", crate::role::stamp()));
         std::fs::rename(path, &aside).map_err(|e| format!("{} has unsafe permissions and could not be moved aside: {e}", path.display()))?;
         println!("  {} had permissions other users could use; moved it to {}", path.display(), aside.display());
     }
@@ -377,7 +388,7 @@ pub fn uninstall() -> Result<(), String> {
         left.push(format!("the firewall rule \"{DISPLAY_NAME}\""));
     }
     let exe = installed_exe();
-    if std::env::current_exe().ok().as_deref() == Some(exe.as_path()) {
+    if is_running(&exe) {
         println!("{} is running this command; delete it afterwards.", exe.display());
     } else {
         match std::fs::remove_file(&exe) {
@@ -551,7 +562,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut windows_sys::core
     // The helper needs its protected folder and refuses to create one; the installer made it,
     // but if it has gone, make it again here, the same protected way.
     let data = system_data_dir();
-    if !data.exists() {
+    if !data.is_dir() {
         // If this fails there is nowhere to log it; the helper keeps refusing, with backoff.
         let _ = create_private_dir(&data);
     }

@@ -81,7 +81,8 @@ fn open_log(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new().create(true).append(!big).write(true).truncate(big).open(path)
 }
 
-fn stamp() -> u64 {
+/// Seconds since 1970, for log lines and unique names.
+pub fn stamp() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 

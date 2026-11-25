@@ -50,8 +50,14 @@ pub fn discover(port: u16, targets: &[IpAddr], wait: Duration) -> io::Result<Vec
     let mut buf = [0u8; MAX_PACKET];
     while Instant::now() < deadline {
         if Instant::now() >= next_send {
-            for t in &all {
-                let _ = sock.send_to(&probe, (*t, port));
+            // Some targets may refuse (an interface going down); if every one does (on a Mac,
+            // say, without Local Network permission), searching is pointless: say why.
+            let mut failure = None;
+            let sent = all.iter().filter(|t| sock.send_to(&probe, (**t, port)).map_err(|e| failure = Some(e)).is_ok()).count();
+            if sent == 0 {
+                if let Some(e) = failure {
+                    return Err(e);
+                }
             }
             next_send = Instant::now() + Duration::from_millis(200);
         }
