@@ -2,10 +2,11 @@
 //! for frames are in [`crate::video`]; this module moves them over an encrypted session.
 
 use crate::clock::now_us;
-use crate::crypto::{self, Session, StaticKeys};
+use crate::crypto::StaticKeys;
 use crate::link::{Event, Link};
+use crate::responder::{Datagram, Responder};
 use crate::video::{self, ClockOffset, Fragmenter, Frame, RateControl, Reassembler, Want};
-use crate::wire::{self, Msg, MAX_PACKET, PKT_DATA, PKT_SESSION_INIT};
+use crate::wire::{Msg, MAX_PACKET};
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -69,12 +70,8 @@ pub fn serve(
     stop: &AtomicBool,
     log: impl Fn(&str),
 ) -> io::Result<()> {
-    struct Peer {
-        session: Arc<Session>,
-        addr: SocketAddr,
-    }
     sock.set_read_timeout(Some(IDLE_POLL))?;
-    let (mut current, mut pending): (Option<Peer>, Option<Peer>) = (None, None);
+    let mut responder = Responder::new(keys.clone());
     let mut source: Option<Box<dyn Source>> = None;
     let (mut last_want, mut key_wanted, mut last_key, mut frame_id) = (0u64, false, 0u64, 0u32);
     let (mut idle_since, mut reopen_at) = (None::<u64>, 0u64);
@@ -89,7 +86,6 @@ pub fn serve(
     let mut dirty = false;
     let (mut cursor, mut cursor_seq) = (None::<(i32, i32)>, 0u32);
     let (mut note, mut noted_at) = (None::<String>, 0u64);
-    let mut hinted_at = 0u64;
 
     while !stop.load(Ordering::Relaxed) {
         // 1. Requests: everything waiting, without blocking while a frame is due.
@@ -100,36 +96,9 @@ pub fn serve(
                 Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::ConnectionReset) => break,
                 Err(e) => return Err(e),
             };
-            let pkt = &buf[..n];
             let now = now_us();
-            match pkt.first() {
-                Some(&PKT_SESSION_INIT) => {
-                    let Some(mac) = paired() else { continue };
-                    if let Ok((s, reply)) = crypto::ik_respond(keys, pkt, |k| *k == mac) {
-                        let _ = sock.send_to(&reply, from);
-                        pending = Some(Peer { session: Arc::new(s), addr: from });
-                    }
-                }
-                Some(&PKT_DATA) => {
-                    let idx = Session::data_index(pkt);
-                    if pending.as_ref().is_some_and(|p| Some(p.session.local_index) == idx) {
-                        if pending.as_ref().unwrap().session.open(pkt, &mut plain).is_none() {
-                            continue;
-                        }
-                        current = pending.take(); // a replayed init cannot cut off a live viewer
-                    } else if current.as_ref().is_none_or(|c| Some(c.session.local_index) != idx) {
-                        // A session from before this process started (the PC restarted): say so,
-                        // and the Mac reconnects at once instead of after its silence timeout.
-                        if let Some(idx) = idx.filter(|_| now.saturating_sub(hinted_at) > crate::agent::UNKNOWN_HINT_INTERVAL.as_micros() as u64) {
-                            hinted_at = now;
-                            let _ = sock.send_to(&wire::encode_unknown_session(idx), from);
-                        }
-                        continue;
-                    } else if current.as_ref().unwrap().session.open(pkt, &mut plain).is_none() {
-                        continue;
-                    }
-                    let c = current.as_mut().unwrap();
-                    c.addr = from;
+            match responder.handle(&sock, &buf[..n], from, &paired, &mut plain) {
+                Datagram::Data { .. } => {
                     if let Some(Msg::VideoWant(w)) = Msg::decode(&plain) {
                         if w.watch {
                             if now.saturating_sub(last_want) > video::WANT_TIMEOUT_US {
@@ -148,15 +117,14 @@ pub fn serve(
                         } else {
                             last_want = 0;
                         }
-                        let reply = Msg::VideoClock { mac_time_us: w.mac_time_us, pc_time_us: now_us(), bitrate: rate.bitrate };
-                        let _ = c.session.send(&sock, c.addr, &reply);
+                        responder.send(&sock, &Msg::VideoClock { mac_time_us: w.mac_time_us, pc_time_us: now_us(), bitrate: rate.bitrate });
                         // The pointer again, in case its last move was lost.
                         if cursor_seq != 0 {
-                            let _ = c.session.send(&sock, c.addr, &Msg::VideoCursor { seq: cursor_seq, at: cursor });
+                            responder.send(&sock, &Msg::VideoCursor { seq: cursor_seq, at: cursor });
                         }
                     }
                 }
-                _ => {}
+                Datagram::Handled | Datagram::Other => {}
             }
             if !watching {
                 break; // idle: one packet per poll is plenty
@@ -164,16 +132,16 @@ pub fn serve(
         }
 
         // Why there is no picture, for the viewer.
-        if let (Some(n), Some(c)) = (&note, current.as_ref()) {
+        if let Some(n) = &note {
             if watching && now_us().saturating_sub(noted_at) >= NOTE_EVERY_US {
                 noted_at = now_us();
-                let _ = c.session.send(&sock, c.addr, &Msg::VideoNote(n.clone()));
+                responder.send(&sock, &Msg::VideoNote(n.clone()));
             }
         }
 
         // 2. Frames, while someone watches.
         let now = now_us();
-        watching = current.is_some() && last_want != 0 && now.saturating_sub(last_want) < video::WANT_TIMEOUT_US;
+        watching = responder.connected() && last_want != 0 && now.saturating_sub(last_want) < video::WANT_TIMEOUT_US;
         if !watching {
             if source.is_some() && now.saturating_sub(*idle_since.get_or_insert(now)) > video::IDLE_RELEASE_US {
                 source = None; // frees the capturer and the encoder
@@ -221,8 +189,7 @@ pub fn serve(
         if polled.cursor != cursor {
             cursor = polled.cursor;
             cursor_seq = cursor_seq.wrapping_add(1);
-            let c = current.as_ref().unwrap();
-            let _ = c.session.send(&sock, c.addr, &Msg::VideoCursor { seq: cursor_seq, at: cursor });
+            responder.send(&sock, &Msg::VideoCursor { seq: cursor_seq, at: cursor });
         }
         let now = now_us();
         let force = key_wanted && now.saturating_sub(last_key) >= video::KEYFRAME_SPACING_US;
@@ -242,7 +209,6 @@ pub fn serve(
         };
         dirty = false;
         last_frame = now; // pace from when this frame was due, so encode and send time do not slow the cadence
-        let c = current.as_ref().unwrap();
         sock.set_nonblocking(false)?; // a full send buffer waits rather than drops
         for e in encoded {
             if e.keyframe {
@@ -252,7 +218,7 @@ pub fn serve(
             frame_id = frame_id.wrapping_add(1);
             let frame = Frame { id: frame_id, data: e.data, keyframe: e.keyframe, hevc: e.hevc, captured_us: e.captured_us, pc_us: e.pc_us };
             for f in fragmenter.split(&frame) {
-                let _ = c.session.send(&sock, c.addr, &Msg::VideoFrag(f));
+                responder.send(&sock, &Msg::VideoFrag(f));
             }
         }
     }

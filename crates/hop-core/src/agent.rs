@@ -2,9 +2,10 @@
 //! Mac, and feeds state datagrams to the [`Receiver`].
 
 use crate::clock::now_us;
-use crate::crypto::{self, Paired, Session, StaticKeys};
+use crate::crypto::{self, Paired, StaticKeys};
 use crate::receiver::{Injector, Receiver};
-use crate::wire::{self, Ack, Monitor, Msg, ACK_ACTIVE, ACK_BLOCKED, ACK_EPOCH_DEAD, MAX_PACKET, PKT_DATA, PKT_PROBE, PKT_SESSION_INIT};
+use crate::responder::{Datagram, Responder};
+use crate::wire::{self, Ack, Monitor, Msg, ACK_ACTIVE, ACK_BLOCKED, ACK_EPOCH_DEAD, MAX_PACKET};
 use std::io;
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,8 +65,6 @@ const BATCH_PACKETS: u32 = 64;
 const BATCH_TIME: Duration = Duration::from_millis(2);
 /// Acks are sent at once when something changed, else at most this often.
 const ACK_INTERVAL_US: u64 = 10_000;
-/// Fewest gap between unauthenticated "unknown session" hints.
-pub(crate) const UNKNOWN_HINT_INTERVAL: Duration = Duration::from_millis(100);
 
 fn spawn_pairing(
     listener: TcpListener,
@@ -147,18 +146,6 @@ fn accept_pairing(
     None
 }
 
-struct Peer {
-    session: Arc<Session>,
-    addr: SocketAddr,
-}
-
-impl Peer {
-    fn send(&self, sock: &UdpSocket, msg: &Msg) {
-        // Lost like any datagram; the Mac's lease and retransmits cover it.
-        let _ = self.session.send(sock, self.addr, msg);
-    }
-}
-
 /// Run until `stop` is set.
 pub fn run(
     cfg: AgentConfig,
@@ -190,14 +177,12 @@ pub fn run(
     sock.set_read_timeout(Some(POLL))?;
 
     let mut receiver = Receiver::default();
-    let mut current: Option<Peer> = None;
-    let mut pending: Option<Peer> = None;
+    let mut responder = Responder::new(cfg.keys.clone());
     let mut monitors = platform.monitors();
     let mut monitors_at = Instant::now();
     let mut blocked = false;
     let mut blocked_at = Instant::now();
     let mut last_ack_us = 0u64;
-    let mut last_unknown = Instant::now() - Duration::from_secs(1);
     let mut buf = vec![0u8; MAX_PACKET];
     let mut plain = Vec::with_capacity(MAX_PACKET);
 
@@ -219,64 +204,30 @@ pub fn run(
                 let (n, from) = got;
                 let now = now_us();
                 let pkt = &buf[..n];
-                match pkt.first() {
-                    Some(&PKT_PROBE) => {
+                match responder.handle(&sock, pkt, from, || *paired.lock().unwrap(), &mut plain) {
+                    Datagram::Other => {
                         if let Some(id) = wire::decode_probe(pkt) {
                             let _ = sock.send_to(&wire::encode_probe_reply(id, &cfg.keys.public, &cfg.name), from);
                         }
                     }
-                    Some(&PKT_SESSION_INIT) => {
-                        let allowed = *paired.lock().unwrap();
-                        if let Some(mac) = allowed {
-                            if let Ok((sess, reply)) = crypto::ik_respond(&cfg.keys, pkt, |k| *k == mac) {
-                                let _ = sock.send_to(&reply, from);
-                                // Promoted only when it carries its first valid datagram, so a
-                                // replayed SESSION_INIT cannot cut off the live session.
-                                pending = Some(Peer { session: Arc::new(sess), addr: from });
+                    Datagram::Handled => {}
+                    Datagram::Data { nonce, new_session } => {
+                        if new_session {
+                            // The receiver orders states by the session's nonces: start it over.
+                            receiver.reset(platform);
+                            events(AgentEvent::SessionStarted(from));
+                        }
+                        match Msg::decode(&plain) {
+                            Some(Msg::State(s)) => {
+                                if let Some(info) = receiver.on_state(now, nonce, &s, platform) {
+                                    let progressed = info.progressed || ack_due.is_some_and(|(a, _)| a.progressed);
+                                    ack_due = Some((crate::receiver::AckInfo { progressed, ..info }, now));
+                                }
                             }
+                            Some(Msg::Ping { t }) => responder.send(&sock, &Msg::Pong { t }),
+                            _ => {}
                         }
                     }
-                    Some(&PKT_DATA) => {
-                        let idx = Session::data_index(pkt);
-                        let mut nonce = None;
-                        if let Some(p) = pending.as_ref().filter(|p| Some(p.session.local_index) == idx) {
-                            if let Some(n) = p.session.open(pkt, &mut plain) {
-                                nonce = Some(n);
-                                receiver.reset(platform);
-                                let mut p = pending.take().unwrap();
-                                p.addr = from;
-                                events(AgentEvent::SessionStarted(from));
-                                current = Some(p);
-                            }
-                        } else if let Some(c) = current.as_mut().filter(|c| Some(c.session.local_index) == idx) {
-                            if let Some(n) = c.session.open(pkt, &mut plain) {
-                                nonce = Some(n);
-                                c.addr = from;
-                            }
-                        } else if let Some(idx) = idx {
-                            if last_unknown.elapsed() > UNKNOWN_HINT_INTERVAL {
-                                last_unknown = Instant::now();
-                                let _ = sock.send_to(&wire::encode_unknown_session(idx), from);
-                            }
-                        }
-                        if let Some(nonce) = nonce {
-                            match Msg::decode(&plain) {
-                                Some(Msg::State(s)) => {
-                                    if let Some(info) = receiver.on_state(now, nonce, &s, platform) {
-                                        let progressed = info.progressed || ack_due.is_some_and(|(a, _)| a.progressed);
-                                        ack_due = Some((crate::receiver::AckInfo { progressed, ..info }, now));
-                                    }
-                                }
-                                Some(Msg::Ping { t }) => {
-                                    if let Some(c) = &current {
-                                        c.send(&sock, &Msg::Pong { t });
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    _ => {}
                 }
                 if batch >= BATCH_PACKETS || batch_start.elapsed() > BATCH_TIME {
                     break;
@@ -300,7 +251,7 @@ pub fn run(
             blocked = platform.input_blocked();
             blocked_at = Instant::now();
         }
-        if let (Some((info, recv_at)), Some(c)) = (ack_due, current.as_ref()) {
+        if let Some((info, recv_at)) = ack_due.filter(|_| responder.connected()) {
             if info.progressed || !info.active || info.dead || now.saturating_sub(last_ack_us) >= ACK_INTERVAL_US {
                 let (cx, cy) = platform.cursor_pos();
                 let mut flags = 0;
@@ -323,7 +274,7 @@ pub fn run(
                     cursor_y: cy,
                     monitors: monitors.clone(),
                 };
-                c.send(&sock, &Msg::Ack(ack));
+                responder.send(&sock, &Msg::Ack(ack));
                 last_ack_us = now;
             }
         }
