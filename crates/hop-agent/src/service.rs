@@ -107,7 +107,8 @@ fn run(path: &Path, args: &[&str]) -> bool {
     }
 }
 
-/// Install the service, carrying over the identity and pairing kept in `console`.
+/// Install the service. On a first install it takes the identity and pairing kept in `console`;
+/// an upgrade keeps the service's own.
 pub fn install(console: &AgentStore) -> Result<(), String> {
     if !is_elevated() {
         return Err("run this from an administrator terminal (right-click Terminal → Run as administrator)".into());
@@ -135,11 +136,9 @@ pub fn install(console: &AgentStore) -> Result<(), String> {
     }
     prepare_private_dir(&data)?;
     let d = data.display().to_string();
-    for f in console.files() {
-        let src = console.dir.join(f);
-        if src.exists() {
-            std::fs::copy(&src, data.join(f)).map_err(|e| format!("copying {f}: {e}"))?;
-        }
+    let service = AgentStore::new(data.clone());
+    if service.adopt(console).map_err(|e| format!("copying the pairing into {d}: {e}"))? {
+        println!("  took this PC's key and pairing from {}", console.dir.display());
     }
     let bin = format!("\"{}\" service", exe.display());
     if !delete_service()? {

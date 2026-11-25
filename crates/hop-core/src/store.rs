@@ -80,9 +80,19 @@ impl<R: Record> Store<R> {
         Store { dir, _record: std::marker::PhantomData }
     }
 
-    /// Every file this store owns (for copying the whole identity elsewhere).
-    pub fn files(&self) -> [&'static str; 2] {
-        [R::KEY_FILE, R::FILE]
+    /// Take `from`'s identity and pairing, unless this store already has an identity of its own:
+    /// a key a paired machine already trusts must never be replaced. `Ok(true)` if it took one.
+    pub fn adopt(&self, from: &Store<R>) -> io::Result<bool> {
+        if self.dir.join(R::KEY_FILE).exists() || !from.dir.join(R::KEY_FILE).exists() {
+            return Ok(false);
+        }
+        for f in [R::KEY_FILE, R::FILE] {
+            let src = from.dir.join(f);
+            if src.exists() {
+                fs::copy(&src, self.dir.join(f))?;
+            }
+        }
+        Ok(true)
     }
 
     /// This side's static key, created on first use.
@@ -204,6 +214,29 @@ mod tests {
             assert_eq!(fs::metadata(dir.join("agent.key")).unwrap().permissions().mode() & 0o777, 0o600);
         }
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn adopting_never_replaces_an_identity() {
+        let (from, to) = (AgentStore::new(tmp("adopt-from")), AgentStore::new(tmp("adopt-to")));
+        fs::create_dir_all(&to.dir).unwrap();
+        let theirs = from.keys().unwrap();
+        from.save_peer(&MacRecord { public: [1; 32], name: "Old Mac".into() }).unwrap();
+        assert!(to.adopt(&from).unwrap(), "an empty store takes the identity");
+        assert_eq!(to.keys().unwrap().public, theirs.public);
+        assert_eq!(to.peer().unwrap().name, "Old Mac");
+
+        to.save_peer(&MacRecord { public: [2; 32], name: "New Mac".into() }).unwrap();
+        let _ = fs::remove_dir_all(&from.dir);
+        let other = AgentStore::new(tmp("adopt-other"));
+        other.keys().unwrap();
+        other.save_peer(&MacRecord { public: [3; 32], name: "Stale Mac".into() }).unwrap();
+        assert!(!to.adopt(&other).unwrap(), "a store with its own identity keeps it");
+        assert_eq!(to.keys().unwrap().public, theirs.public);
+        assert_eq!(to.peer().unwrap().name, "New Mac");
+        for s in [&to, &other] {
+            fs::remove_dir_all(&s.dir).unwrap();
+        }
     }
 
     #[test]
