@@ -12,7 +12,11 @@ use crate::wire::{self, Ack, Monitor, State, TransKind, Transition, ACK_ACTIVE, 
 use std::collections::VecDeque;
 
 /// Windows wheel units per Mac scroll point (a notch is 120 units, about 48 px of content).
-pub const WHEEL_UNITS_PER_POINT: f64 = 2.5;
+const WHEEL_UNITS_PER_POINT: f64 = 2.5;
+/// Windows wheel units per line (one notch) of a wheel mouse.
+const WHEEL_UNITS_PER_LINE: f64 = 120.0;
+/// Round trips kept for the statistics.
+const RTT_SAMPLES: usize = 512;
 
 /// While the PC is in control, a state goes out at least this often.
 const HEARTBEAT_US: u64 = 15_000;
@@ -172,6 +176,8 @@ pub struct Controller {
     cfg: ControllerConfig,
     mac: Vec<Rect>,
     pc: Vec<Monitor>,
+    /// `pc` as rectangles, for the geometry (made once per change, not per motion event).
+    pc_rects: Vec<Rect>,
     pc_cursor: Option<(i32, i32)>,
     remote: Option<Remote>,
     mapper: KeyMapper,
@@ -197,6 +203,7 @@ impl Controller {
             cfg,
             mac: mac_displays,
             pc: Vec::new(),
+            pc_rects: Vec::new(),
             pc_cursor: None,
             remote: None,
             mapper: KeyMapper::new(map),
@@ -210,7 +217,7 @@ impl Controller {
             retired: false,
             goodbye: 0,
             closing: None,
-            rtt: VecDeque::with_capacity(512),
+            rtt: VecDeque::with_capacity(RTT_SAMPLES),
         }
     }
 
@@ -246,10 +253,6 @@ impl Controller {
     /// When the PC's silence would end control (µs); `None` while the Mac has its input.
     pub fn lease_deadline(&self) -> Option<u64> {
         self.remote.as_ref().map(|r| r.last_ack_us + LEASE_US)
-    }
-
-    fn pc_rects(&self) -> Vec<Rect> {
-        self.pc.iter().map(Rect::from).collect()
     }
 
     fn fresh(&self, now: u64) -> bool {
@@ -296,7 +299,7 @@ impl Controller {
         self.near_edge = layout::distance_to_edge(&self.mac, self.cfg.side, loc) < WARM_DISTANCE;
         if self.cfg.edges && self.can_cross(now) && layout::mac_crossing(&self.mac, self.cfg.side, loc, delta) {
             let frac = layout::edge_fraction(&self.mac, self.cfg.side, loc);
-            if let Some(entry) = layout::point_on_edge(&self.pc_rects(), self.cfg.side.opposite(), frac, 0.0) {
+            if let Some(entry) = layout::point_on_edge(&self.pc_rects, self.cfg.side.opposite(), frac, 0.0) {
                 return self.enter(now, entry, loc, flags);
             }
         }
@@ -342,7 +345,7 @@ impl Controller {
         if self.expired(now) {
             return self.leave(now, LeaveReason::Timeout);
         }
-        let k = if continuous { WHEEL_UNITS_PER_POINT } else { 120.0 } * self.cfg.scroll_speed;
+        let k = if continuous { WHEEL_UNITS_PER_POINT } else { WHEEL_UNITS_PER_LINE } * self.cfg.scroll_speed;
         let r = self.remote.as_mut().unwrap();
         let (bv, bh) = (r.scroll_v.trunc(), r.scroll_h.trunc());
         r.scroll_v += dv * k;
@@ -361,7 +364,7 @@ impl Controller {
             return self.leave(now, LeaveReason::Hotkey);
         }
         if self.can_cross(now) {
-            let rects = self.pc_rects();
+            let rects = &self.pc_rects;
             let pos = self
                 .pc_cursor
                 .map(|(x, y)| (x as f64, y as f64))
@@ -450,11 +453,12 @@ impl Controller {
         self.last_ack_any_us = Some(now);
         if !a.monitors.is_empty() {
             self.pc = a.monitors.clone();
+            self.pc_rects = self.pc.iter().map(Rect::from).collect();
         }
         self.pc_cursor = Some((a.cursor_x, a.cursor_y));
         if a.echo_time_us != 0 && a.echo_time_us <= now {
             let rtt = (now - a.echo_time_us).saturating_sub(a.hold_us as u64).min(u32::MAX as u64) as u32;
-            if self.rtt.len() == 512 {
+            if self.rtt.len() == RTT_SAMPLES {
                 self.rtt.pop_front();
             }
             self.rtt.push_back(rtt);
@@ -603,11 +607,10 @@ impl Controller {
             return self.leave(now, LeaveReason::Timeout);
         }
         let side = self.cfg.side;
-        let rects = self.pc_rects();
         let r = self.remote.as_mut().unwrap();
         let k = self.cfg.speed * layout::scale_at(&self.pc, r.pos);
         r.last_motion_us = now;
-        match layout::pc_move(&rects, side, r.pos, (delta.0 * k, delta.1 * k)) {
+        match layout::pc_move(&self.pc_rects, side, r.pos, (delta.0 * k, delta.1 * k)) {
             PcMove::Stay(p) => {
                 let moved = p.0.floor() != r.pos.0.floor() || p.1.floor() != r.pos.1.floor();
                 r.pos = p;
@@ -621,7 +624,7 @@ impl Controller {
             }
             PcMove::Exit(_) => {
                 // Stay on the PC, pinned to its edge (hotkey-only return, or dragging).
-                let p = layout::pc_clamp(&rects, r.pos, (delta.0 * k, delta.1 * k));
+                let p = layout::pc_clamp(&self.pc_rects, r.pos, (delta.0 * k, delta.1 * k));
                 let moved = p.0.floor() != r.pos.0.floor() || p.1.floor() != r.pos.1.floor();
                 r.pos = p;
                 if !moved {
@@ -633,14 +636,8 @@ impl Controller {
     }
 
     fn push(&mut self, now: u64, kind: TransKind, code: u16) {
-        let r = self.remote.as_ref().unwrap();
-        let pos = (r.pos.0.floor() as i32, r.pos.1.floor() as i32);
-        self.push_at(now, kind, code, pos);
-    }
-
-    fn push_at(&mut self, now: u64, kind: TransKind, code: u16, pos: (i32, i32)) {
         let r = self.remote.as_mut().unwrap();
-        r.unacked.push_back(Transition { kind, code, x: pos.0, y: pos.1 });
+        r.unacked.push_back(Transition { kind, code, x: r.pos.0.floor() as i32, y: r.pos.1.floor() as i32 });
         r.retx_at = Some(now + RETRANSMIT_US);
     }
 

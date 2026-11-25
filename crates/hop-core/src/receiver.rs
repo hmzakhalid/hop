@@ -283,6 +283,7 @@ impl Receiver {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// An injector that records what it was asked to do, for tests.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Recorder {
@@ -294,6 +295,7 @@ pub struct Recorder {
     pub wheel_h: i64,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Key(u16, bool),
@@ -303,6 +305,7 @@ pub enum Op {
     Mask,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Injector for Recorder {
     fn key(&mut self, code: u16, down: bool) -> bool {
         self.ops.push(Op::Key(code, down));

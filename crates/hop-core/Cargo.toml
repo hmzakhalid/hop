@@ -11,3 +11,10 @@ snow.workspace = true
 blake2.workspace = true
 rand.workspace = true
 reed-solomon-erasure = "6.0.0"
+
+[features]
+# The recording injector (receiver::Recorder), for tests here and in other crates.
+test-support = []
+
+[dev-dependencies]
+hop-core = { path = ".", features = ["test-support"] }

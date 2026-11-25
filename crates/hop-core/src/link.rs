@@ -125,10 +125,7 @@ impl Link {
     }
 
     fn follow(&self, from: SocketAddr) {
-        let mut p = self.peer.lock().unwrap();
-        if *p != from {
-            *p = from;
-        }
+        *self.peer.lock().unwrap() = from;
     }
 
     /// How long since the last authenticated packet; `None` before the first.

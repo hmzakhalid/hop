@@ -24,9 +24,17 @@ pub struct MapConfig {
 }
 
 impl MapConfig {
-    /// The Mac key that acts as the Windows key.
+    /// Which Mac modifier is the Windows key (the other of ⌘ and ⌃ is Ctrl).
+    fn win_class(&self) -> ModClass {
+        if self.cmd_as_win { ModClass::Cmd } else { ModClass::Ctrl }
+    }
+
+    /// The Mac key that acts as the Windows key, as people see it.
     pub fn win_key(&self) -> &'static str {
-        if self.cmd_as_win { "⌘" } else { "⌃" }
+        match self.win_class() {
+            ModClass::Cmd => "⌘",
+            _ => "⌃",
+        }
     }
 }
 
@@ -224,11 +232,9 @@ impl KeyMapper {
         let r = m.is_right();
         match m.class() {
             ModClass::Cmd if self.sticky_alt => win::LALT,
-            ModClass::Cmd if self.cfg.cmd_as_win => if r { win::RWIN } else { win::LWIN },
-            ModClass::Cmd => if r { win::RCTRL } else { win::LCTRL },
+            c @ (ModClass::Cmd | ModClass::Ctrl) if c == self.cfg.win_class() => if r { win::RWIN } else { win::LWIN },
+            ModClass::Cmd | ModClass::Ctrl => if r { win::RCTRL } else { win::LCTRL },
             ModClass::Opt => if r { win::RALT } else { win::LALT },
-            ModClass::Ctrl if self.cfg.cmd_as_win => if r { win::RCTRL } else { win::LCTRL },
-            ModClass::Ctrl => if r { win::RWIN } else { win::LWIN },
             ModClass::Shift => if r { win::RSHIFT } else { win::LSHIFT },
         }
     }
