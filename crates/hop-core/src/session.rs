@@ -83,6 +83,13 @@ impl Session {
     }
 
     fn finish(&self, c: &Controller, out: Output) -> bool {
+        // Arm the watchdog before any effect (Enter hides and holds the Mac's cursor, and if
+        // anything after it stalls, the watchdog must already know when to take it back), and
+        // disarm it only after the effect (a stalled Leave stays covered).
+        let deadline = c.lease_deadline().unwrap_or(0);
+        if deadline != 0 {
+            self.deadline.store(deadline, Ordering::SeqCst);
+        }
         if let Some(s) = out.send {
             // A failed send needs no handling here: the lease returns control, and the same
             // failure shows up when `tick` tries to reconnect.
@@ -91,7 +98,7 @@ impl Session {
         if let Some(e) = out.effect {
             self.effects.apply(e);
         }
-        self.deadline.store(c.lease_deadline().unwrap_or(0), Ordering::SeqCst);
+        self.deadline.store(deadline, Ordering::SeqCst);
         out.swallow
     }
 
@@ -178,16 +185,52 @@ mod tests {
     use crate::wire::{Ack, Monitor};
     use std::net::UdpSocket;
 
-    #[test]
-    fn the_timer_sleeps_while_the_pc_has_control() {
+    fn session(effects: Arc<dyn Effects>) -> Arc<Session> {
         let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
         let nowhere = UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
         let link = Arc::new(Link::new(sock, StaticKeys::generate(), [0; 32], nowhere).unwrap());
         let ctl = Controller::new(ControllerConfig::default(), vec![Rect::new(0.0, 0.0, 1512.0, 982.0)]);
-        let session = Session::new(ctl, link, Arc::new(NoEffects));
+        Session::new(ctl, link, effects)
+    }
+
+    fn enter(session: &Session) {
         let monitors = vec![Monitor { left: 0, top: 0, right: 1920, bottom: 1080, scale_milli: 1000 }];
         session.act(|c, now| c.ack(now, &Ack { monitors, ..Ack::default() }));
         session.act(|c, now| c.key(now, mac::RIGHT, true, false, mac::HYPER, (0.0, 0.0)));
+    }
+
+    /// Records the watchdog's deadline as each effect starts.
+    #[derive(Default)]
+    struct DeadlineAtEffect {
+        session: std::sync::OnceLock<std::sync::Weak<Session>>,
+        seen: Mutex<Vec<(bool, u64)>>,
+    }
+
+    impl Effects for DeadlineAtEffect {
+        fn apply(&self, effect: Effect) {
+            let deadline = self.session.get().and_then(|w| w.upgrade()).map_or(0, |s| s.lease_deadline());
+            self.seen.lock().unwrap().push((matches!(effect, Effect::Enter), deadline));
+        }
+    }
+
+    #[test]
+    fn the_watchdog_is_armed_before_entering_and_disarmed_after_leaving() {
+        let effects = Arc::new(DeadlineAtEffect::default());
+        let session = session(effects.clone());
+        effects.session.set(Arc::downgrade(&session)).unwrap();
+        enter(&session);
+        session.act(|c, now| c.key(now, mac::LEFT, true, false, mac::HYPER, (0.0, 0.0)));
+        let seen = effects.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "one Enter and one Leave: {seen:?}");
+        assert!(seen[0].0 && seen[0].1 != 0, "Enter must run with the watchdog armed: {seen:?}");
+        assert!(!seen[1].0 && seen[1].1 != 0, "Leave must run before the watchdog is disarmed: {seen:?}");
+        assert_eq!(session.lease_deadline(), 0, "disarmed once the Mac has its input back");
+    }
+
+    #[test]
+    fn the_timer_sleeps_while_the_pc_has_control() {
+        let session = session(Arc::new(NoEffects));
+        enter(&session);
         assert!(session.read(|c| c.is_remote()));
         assert!(session.take_wake(), "an event while in control wakes the timer");
         let (wait, _) = session.tick();
