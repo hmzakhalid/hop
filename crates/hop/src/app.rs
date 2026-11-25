@@ -10,11 +10,10 @@
 
 use crate::live::{self, Live, SignalsBlocked};
 use crate::{hud, login, macos, pc, prefs, updates};
-use hop_core::clock::now_us;
 use hop_core::controller::{Controller, ControllerConfig};
 use hop_core::keymap::mac;
 use hop_core::layout::Side;
-use hop_core::link::{Event, Found};
+use hop_core::link::{Found, Link};
 use hop_core::session::Session;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
@@ -32,7 +31,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// A PC silent this long is gone (asleep, off, or at a new address).
-const SILENT_AFTER_US: u64 = 15_000_000;
+const SILENT_AFTER: Duration = Duration::from_secs(15);
 const RETRY: Duration = Duration::from_secs(3);
 const ACCESSIBILITY_SETTINGS: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
@@ -43,7 +42,7 @@ enum Conn {
     NotPaired,
     Looking(String),
     Unreachable(String),
-    Connected { name: String, addr: SocketAddr },
+    Connected { name: String, addr: SocketAddr, public: [u8; 32] },
 }
 
 impl Conn {
@@ -53,7 +52,7 @@ impl Conn {
             Conn::NotPaired => "Not paired with a PC".into(),
             Conn::Looking(name) => format!("Looking for {name}…"),
             Conn::Unreachable(name) => format!("{name} is not answering"),
-            Conn::Connected { name, addr } => format!("Connected to {name} ({})", addr.ip()),
+            Conn::Connected { name, addr, .. } => format!("Connected to {name} ({})", addr.ip()),
         }
     }
 }
@@ -150,8 +149,8 @@ fn supervise(shared: &Shared) {
     struct Current {
         public: [u8; 32],
         prefs: u64,
-        addr: SocketAddr,
-        heard: Arc<AtomicU64>,
+        /// The live link, which follows the PC's address as its packets arrive.
+        link: Arc<Link>,
     }
     let mut current: Option<Current> = None;
     let mut next_try = Instant::now();
@@ -168,9 +167,9 @@ fn supervise(shared: &Shared) {
         let prefs_now = shared.prefs_changed.load(Ordering::SeqCst);
         if let Some(c) = &current {
             let same = c.public == rec.public && c.prefs == prefs_now;
-            let silent = now_us().saturating_sub(c.heard.load(Ordering::Relaxed)) > SILENT_AFTER_US;
+            let silent = c.link.quiet_for().is_none_or(|q| q > SILENT_AFTER);
             if same && !silent {
-                shared.set_conn(Conn::Connected { name: rec.name.clone(), addr: c.addr });
+                shared.set_conn(Conn::Connected { name: rec.name.clone(), addr: c.link.peer(), public: rec.public });
                 continue;
             }
             if same {
@@ -181,7 +180,7 @@ fn supervise(shared: &Shared) {
                 }
                 next_try = Instant::now() + RETRY;
                 match pc::locate(&rec, Duration::from_millis(600)) {
-                    Some(a) if a != c.addr => {}
+                    Some(a) if a != c.link.peer() => {}
                     _ => continue,
                 }
             }
@@ -201,16 +200,9 @@ fn supervise(shared: &Shared) {
                 let cfg = shared.prefs.lock().unwrap().clone();
                 let effects = live.effects(&pc.name, cfg.side);
                 let session = Session::new(Controller::new(cfg, macos::displays()), pc.link.clone(), effects);
-                let heard = Arc::new(AtomicU64::new(now_us()));
-                let h = heard.clone();
-                live.attach(session, move |e| {
-                    if let Ok(Event::Msg(_)) = e {
-                        h.store(now_us(), Ordering::Relaxed);
-                    }
-                });
-                let addr = pc.link.peer();
-                shared.set_conn(Conn::Connected { name: pc.name, addr });
-                current = Some(Current { public: rec.public, prefs: prefs_now, addr, heard });
+                live.attach(session, |_| {});
+                shared.set_conn(Conn::Connected { name: pc.name, addr: pc.link.peer(), public: rec.public });
+                current = Some(Current { public: rec.public, prefs: prefs_now, link: pc.link });
             }
         }
     }
@@ -259,9 +251,8 @@ define_class!(
         #[unsafe(method(showScreen:))]
         fn show_screen(&self, _: Option<&AnyObject>) {
             let shared = self.shared();
-            let Conn::Connected { name, addr } = shared.conn.lock().unwrap().clone() else { return };
-            let Some(rec) = pc::store().peer() else { return };
-            crate::screen::open(self.mtm(), crate::screen::Target { name, addr, public: rec.public }, shared.live.get().copied(), || {});
+            let Conn::Connected { name, addr, public } = shared.conn.lock().unwrap().clone() else { return };
+            crate::screen::open(self.mtm(), crate::screen::Target { name, addr, public }, shared.live.get().copied(), || {});
         }
 
         #[unsafe(method(grantAccess:))]
@@ -454,7 +445,7 @@ pub fn print_menus() {
         Conn::NeedsAccess,
         Conn::NotPaired,
         Conn::Looking("Desk PC".into()),
-        Conn::Connected { name: "Desk PC".into(), addr: ([192, 168, 1, 20], 47820).into() },
+        Conn::Connected { name: "Desk PC".into(), addr: ([192, 168, 1, 20], 47820).into(), public: [0; 32] },
     ];
     for conn in states {
         let shared = Arc::new(Shared {
