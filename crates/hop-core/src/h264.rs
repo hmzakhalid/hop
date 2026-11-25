@@ -51,11 +51,6 @@ pub struct AvccFrame {
     pub keyframe: bool,
 }
 
-/// Convert one Annex B access unit (one encoded frame) to AVCC.
-pub fn to_avcc(frame: &[u8]) -> AvccFrame {
-    to_length_prefixed(frame, false)
-}
-
 /// HEVC NAL unit types this needs (the type is in bits 1–6 of the first header byte).
 pub mod hevc {
     pub const IDR_W_RADL: u8 = 19;
@@ -175,12 +170,12 @@ mod tests {
     fn keyframe_to_avcc_keeps_parameter_sets_apart() {
         let aus = access_units(&stream());
         assert_eq!(aus.len(), 3);
-        let f = to_avcc(&aus[0]);
+        let f = to_length_prefixed(&aus[0], false);
         assert!(f.keyframe);
         assert_eq!(f.sps.as_deref(), Some(&[0x67, 0x64, 0x00, 0x28][..]));
         assert_eq!(f.pps.as_deref(), Some(&[0x68, 0xEE, 0x3C, 0x80][..]));
         assert_eq!(f.avcc, vec![0, 0, 0, 3, 0x65, 0x88, 0x84]);
-        let p = to_avcc(&aus[1]);
+        let p = to_length_prefixed(&aus[1], false);
         assert!(!p.keyframe && p.sps.is_none());
         assert_eq!(p.avcc, vec![0, 0, 0, 3, 0x41, 0x9A, 0x02]);
     }

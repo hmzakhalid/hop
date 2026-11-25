@@ -43,6 +43,8 @@ const _: () = assert!(DEADMAN_US > LEASE_US);
 
 /// Longest machine name sent in a probe reply or during pairing, in bytes.
 pub const MAX_NAME: usize = 64;
+/// Longest [`Msg::VideoNote`] text, in bytes.
+pub const MAX_NOTE: usize = 400;
 
 /// Windows key codes carried on the wire (`u16`): `0x00xx` is a set-1 scan code, `0x01xx` an
 /// extended (E0-prefixed) one.
@@ -389,7 +391,7 @@ impl Msg {
             }
             Msg::VideoNote(text) => {
                 w.u8(MSG_VIDEO_NOTE);
-                let t = truncate_utf8(text, 400);
+                let t = truncate_utf8(text, MAX_NOTE);
                 w.u16(t.len() as u16);
                 w.bytes(t.as_bytes());
             }

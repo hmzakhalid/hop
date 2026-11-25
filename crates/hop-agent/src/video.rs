@@ -100,10 +100,10 @@ pub fn run(args: VideoArgs) -> Result<(), String> {
         crate::platform::on_ctrl_c(stop.clone());
     }
     crate::platform::stop_with_parent(stop.clone());
-    let open = || -> std::io::Result<Box<dyn Source>> {
+    let open = |bitrate| -> std::io::Result<Box<dyn Source>> {
         match &args.file {
-            Some(f) => Ok(Box::new(FileSource::open(f, hop_core::video::MAX_FPS)?)),
-            None => screen_source(role == Role::Service),
+            Some(f) => Ok(Box::new(FileSource::open(f)?)),
+            None => screen_source(role == Role::Service, bitrate),
         }
     };
     // stdout is the agent's pipe (see `supervise`).
@@ -118,16 +118,26 @@ pub fn run(args: VideoArgs) -> Result<(), String> {
     stream::serve(sock, &keys, || store.peer().map(|p| p.public), open, &stop, say).map_err(|e| e.to_string())
 }
 
-/// The screen, captured and encoded.
+/// The screen, captured and encoded at `bitrate` (bits per second) and up to the video channel's
+/// frame rate.
 #[cfg(windows)]
-fn screen_source(follow_input_desktop: bool) -> std::io::Result<Box<dyn hop_core::stream::Source>> {
+fn screen_source(follow_input_desktop: bool, bitrate: u32) -> std::io::Result<Box<dyn hop_core::stream::Source>> {
     use hop_video::capture::Settings;
-    let s = hop_video::source::ScreenSource::open(&Settings { follow_input_desktop, hevc: true, ..Settings::default() })?;
+    let s = hop_video::source::ScreenSource::open(&Settings {
+        // The primary monitor: its pixels are the PC's desktop coordinates, which the Mac's
+        // cursor overlay relies on.
+        monitor: 0,
+        fps: hop_core::video::MAX_FPS,
+        bitrate,
+        hardware: true,
+        follow_input_desktop,
+        hevc: true,
+    })?;
     println!("video: capturing {}", s.describe());
     Ok(Box::new(s))
 }
 
 #[cfg(not(windows))]
-fn screen_source(_: bool) -> std::io::Result<Box<dyn hop_core::stream::Source>> {
+fn screen_source(_: bool, _: u32) -> std::io::Result<Box<dyn hop_core::stream::Source>> {
     Err(std::io::Error::other("screen capture needs Windows; use --file to replay a recording"))
 }

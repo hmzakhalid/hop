@@ -82,7 +82,7 @@ fn start_pc_on(sock: UdpSocket, pc: StaticKeys, mac_public: [u8; 32], changing_p
     let capturers = Arc::new(AtomicU32::new(0));
     let (s, c) = (stop.clone(), capturers.clone());
     thread::spawn(move || {
-        let open = || -> io::Result<Box<dyn Source>> {
+        let open = |_bitrate| -> io::Result<Box<dyn Source>> {
             c.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(Synthetic { n: 0, polls: 0, changing_polls, opened: c.clone() }))
         };

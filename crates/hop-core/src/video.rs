@@ -30,6 +30,7 @@ pub const WANT_EVERY_US: u64 = 100_000;
 pub const WANT_TIMEOUT_US: u64 = 1_000_000;
 /// The PC frees the capturer (and the GPU encoder) after this long without a viewer.
 pub const IDLE_RELEASE_US: u64 = 5_000_000;
+const _: () = assert!(WANT_EVERY_US < WANT_TIMEOUT_US && WANT_TIMEOUT_US < IDLE_RELEASE_US);
 /// Keyframe requests closer together than this are merged: a keyframe is large, and a burst of
 /// them on a lossy link would only make things worse.
 pub const KEYFRAME_SPACING_US: u64 = 250_000;

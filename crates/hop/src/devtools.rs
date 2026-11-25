@@ -102,25 +102,30 @@ pub fn drive(host: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-/// Play a recorded H.264 file (from `hop-capture`) in the screen viewer.
+/// Play a recording (from `hop-capture`) in the screen viewer, the way the PC would stream it.
 pub fn view_file(path: &str) -> Result<(), String> {
+    use hop_core::stream::{FileSource, Source};
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
-    let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-    let frames = hop_core::h264::access_units(&data);
-    let (w, h) = frames.iter().find_map(|f| view::dimensions(f, false)).ok_or("no keyframe in the file")?;
+    let mut source = FileSource::open(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
     let mtm = MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    let (window, mut decoder) = view::Window::open(mtm, &format!("{path} — {w}×{h}"), w, h, || std::process::exit(0));
-    window.set_cursor(Some((w as f64 / 2.0, h as f64 / 2.0)));
-    println!("Playing {} frames of {w}×{h} at 60 fps.", frames.len());
-    std::thread::spawn(move || loop {
-        for f in &frames {
-            if decoder.push(f, false) == view::Pushed::NeedKeyframe {
-                decoder.reset();
+    let (window, mut decoder) = view::Window::open(mtm, path, 1920, 1080, || std::process::exit(0));
+    println!("Playing {path} at {} fps.", hop_core::video::MAX_FPS);
+    std::thread::spawn(move || {
+        let mut size = None;
+        loop {
+            let _ = source.poll(100);
+            for e in source.encode(false).unwrap_or_default() {
+                if decoder.push(&e.data, e.hevc) == view::Pushed::NeedKeyframe {
+                    decoder.reset();
+                }
+                if let Some((w, h)) = decoder.size().filter(|s| Some(*s) != size) {
+                    size = Some((w, h));
+                    println!("{w}×{h}");
+                }
             }
-            std::thread::sleep(Duration::from_micros(16_667));
         }
     });
     exit_after("HOP_VIEW_SECONDS", None);

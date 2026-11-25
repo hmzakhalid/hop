@@ -48,13 +48,13 @@ const IDLE_POLL: Duration = Duration::from_millis(10);
 const REOPEN_AFTER_US: u64 = 1_000_000;
 
 /// Serve the screen to the paired Mac until `stop`. `paired` gives the paired Mac's key now (it
-/// may change while serving); `open` starts the capturer when someone begins to watch, and it is
-/// dropped again after [`video::IDLE_RELEASE_US`] without a viewer.
+/// may change while serving); `open` starts the capturer at a bitrate when someone begins to
+/// watch, and it is dropped again after [`video::IDLE_RELEASE_US`] without a viewer.
 pub fn serve(
     sock: UdpSocket,
     keys: &StaticKeys,
     paired: impl Fn() -> Option<[u8; 32]>,
-    mut open: impl FnMut() -> io::Result<Box<dyn Source>>,
+    mut open: impl FnMut(u32) -> io::Result<Box<dyn Source>>,
     stop: &AtomicBool,
     log: impl Fn(&str),
 ) -> io::Result<()> {
@@ -143,9 +143,8 @@ pub fn serve(
                 std::thread::sleep(IDLE_POLL);
                 continue;
             }
-            match open() {
-                Ok(mut s) => {
-                    s.set_bitrate(rate.bitrate);
+            match open(rate.bitrate) {
+                Ok(s) => {
                     source = Some(s);
                     key_wanted = true;
                     note = None;
@@ -398,8 +397,9 @@ impl Drop for Client {
     }
 }
 
-/// Plays a recorded H.264 stream (from `hop-capture`) as if it were the screen: for testing the
-/// whole viewer path on any machine. A keyframe request restarts at the recording's start.
+/// Plays a recording from `hop-capture` (H.264, as it records) as if it were the screen, at
+/// [`video::MAX_FPS`]: for testing the viewer on any machine. A keyframe request, or the end,
+/// starts it over.
 pub struct FileSource {
     frames: Vec<(Vec<u8>, bool)>,
     at: usize,
@@ -408,7 +408,7 @@ pub struct FileSource {
 }
 
 impl FileSource {
-    pub fn open(path: &std::path::Path, fps: u32) -> io::Result<FileSource> {
+    pub fn open(path: &std::path::Path) -> io::Result<FileSource> {
         use crate::h264::{access_units, nal_type, nal_units, NAL_IDR};
         let data = std::fs::read(path)?;
         let frames: Vec<(Vec<u8>, bool)> = access_units(&data)
@@ -421,7 +421,7 @@ impl FileSource {
         if !frames.first().is_some_and(|f| f.1) {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "the recording must start with a keyframe"));
         }
-        let every = Duration::from_micros(1_000_000 / fps.max(1) as u64);
+        let every = Duration::from_micros(1_000_000 / video::MAX_FPS as u64);
         Ok(FileSource { frames, at: 0, every, next_at: std::time::Instant::now() })
     }
 }

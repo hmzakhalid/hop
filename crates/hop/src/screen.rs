@@ -38,9 +38,9 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// How often the PC cursor is redrawn while the Mac drives it (above any display's refresh).
 const CURSOR_EVERY: Duration = Duration::from_micros(4_000);
 
-/// The PC answers every request (10 a second). This long without an answer says so in the
-/// title, so a frozen picture is never mistaken for live. (A still screen sends no frames, so
-/// frames alone cannot tell.)
+/// The PC answers every request. This long without an answer says so in the title, so a frozen
+/// picture is never mistaken for live. (A still screen sends no frames, so frames alone cannot
+/// tell.)
 const SILENT_AFTER: Duration = Duration::from_secs(2);
 
 /// The PC to watch.
@@ -128,18 +128,16 @@ fn run(viewer: Viewer, target: Target, mut decoder: view::Decoder, live: Option<
         match received {
             Some(Received::Frame(frame)) => {
                 let image = &frame.encoded;
-                if image.keyframe {
-                    if let Some(dims) = view::dimensions(&image.data, image.hevc).filter(|d| Some(*d) != size) {
-                        size = Some(dims);
-                        viewer.with_window(move |w| w.set_picture_size(dims.0, dims.1));
-                    }
-                }
                 let t = Instant::now();
                 let pushed = decoder.push(&image.data, image.hevc);
                 if pushed == Pushed::NeedKeyframe {
                     decoder.reset();
                     client.decoder_failed();
                     continue;
+                }
+                if let Some(dims) = decoder.size().filter(|d| Some(*d) != size) {
+                    size = Some(dims);
+                    viewer.with_window(move |w| w.set_picture_size(dims.0, dims.1));
                 }
                 stats.shown(&frame, client.age_us(&frame), t.elapsed());
                 (note, hevc) = (None, image.hevc);
@@ -156,7 +154,7 @@ fn run(viewer: Viewer, target: Target, mut decoder: view::Decoder, live: Option<
         if stats.since.elapsed() >= Duration::from_secs(1) {
             let silent = client.silent_for().unwrap_or_default();
             let title = match &note {
-                _ if silent >= SILENT_AFTER => format!("{name} — no answer from the PC for {} s (reconnecting)", silent.as_secs()),
+                _ if silent >= SILENT_AFTER => format!("{name} — no answer from the PC for {} s", silent.as_secs()),
                 Some(n) => format!("{name} — {n}"),
                 None => stats.line(&name, size, hevc, &client),
             };
@@ -230,6 +228,8 @@ fn follow_cursor(live: &'static Live, viewer: Viewer, local: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let mut last = None;
         while viewer.open() {
+            // PC desktop coordinates are pixels of the streamed monitor: screen view streams the
+            // primary monitor, whose top left is the desktop's origin (see hop-agent's video.rs).
             let at = live.session().and_then(|s| s.read(|c| c.pc_cursor()));
             local.store(at.is_some(), Ordering::Relaxed);
             if at.is_some() && at != last {

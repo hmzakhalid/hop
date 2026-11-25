@@ -70,6 +70,12 @@ impl Decoder {
         Pushed::Shown
     }
 
+    /// The picture size, from the newest keyframe's parameter sets.
+    pub fn size(&self) -> Option<(u32, u32)> {
+        let d = unsafe { CMVideoFormatDescriptionGetDimensions(&**self.format.as_ref()?) };
+        Some((d.width as u32, d.height as u32))
+    }
+
     /// Forget the decoder state after loss, until the next keyframe.
     pub fn reset(&mut self) {
         unsafe { self.renderer.flush() };
@@ -157,14 +163,6 @@ extern "C" {
 struct Dims {
     width: i32,
     height: i32,
-}
-
-/// Picture size from a keyframe's parameter sets.
-pub fn dimensions(annexb: &[u8], hevc: bool) -> Option<(u32, u32)> {
-    let f = h264::to_length_prefixed(annexb, hevc);
-    let fmt = make_format(&parameter_sets(&f, hevc)?, hevc)?;
-    let d = unsafe { CMVideoFormatDescriptionGetDimensions(&*fmt) };
-    Some((d.width as u32, d.height as u32))
 }
 
 struct CloseIvars {
