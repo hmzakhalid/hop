@@ -45,16 +45,14 @@ fn vk_for(code: u16) -> u32 {
 
 pub fn run() -> bool {
     println!("hop-agent selftest: injecting test input and catching it before any app sees it.\n");
-    let mut p = WinPlatform::new();
     let mut r = Report { passed: 0, failed: 0 };
-    let _hooks = match Hooks::start(false) {
-        Ok(h) => h,
+    let mut p = match Hooks::start(false) {
+        Ok(h) => WinPlatform::new().caught_by(h),
         Err(e) => {
             println!("{e}; not injecting anything.");
             return false;
         }
     };
-    std::thread::sleep(Duration::from_millis(100));
 
     let monitors = p.monitors();
     println!("Monitors (physical pixels):");

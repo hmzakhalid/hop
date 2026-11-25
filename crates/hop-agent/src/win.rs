@@ -26,8 +26,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetCursorInfo, GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, SystemParametersInfoW, CURSORINFO, CURSOR_SUPPRESSED, SM_CXVIRTUALSCREEN,
     SM_CYVIRTUALSCREEN, SM_MOUSEPRESENT, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SPIF_SENDCHANGE, SPI_GETMOUSEKEYS,
-    SPI_SETMOUSEKEYS, XBUTTON1, XBUTTON2,
-};
+    SPI_SETMOUSEKEYS, XBUTTON1, XBUTTON2, MKF_AVAILABLE, MKF_MOUSEKEYSON, MKF_REPLACENUMBERS};
 
 /// Unassigned virtual key used to keep Alt/Win releases from opening menus (AutoHotkey's choice).
 pub(crate) const VK_MASK: u16 = 0xE8;
@@ -45,11 +44,6 @@ struct ShowPointer {
     done: bool,
     checked: std::time::Instant,
 }
-
-// From WinUser.h (not in windows-sys).
-const MKF_MOUSEKEYSON: u32 = 0x1;
-const MKF_AVAILABLE: u32 = 0x2;
-const MKF_REPLACENUMBERS: u32 = 0x80;
 
 impl ShowPointer {
     fn new() -> Self {
@@ -120,9 +114,9 @@ pub struct WinPlatform {
     /// Windows keys Hop holds down (bit 0 left, bit 1 right).
     win_held: u8,
     lock_key: LockKey,
-    /// Win+L calls `LockWorkStation`. Off in swallow mode, where injected input must only be
-    /// caught and printed.
-    pub lock_directly: bool,
+    /// Our own hooks catch what we inject (swallow mode, selftest): then nothing may act outside
+    /// `SendInput`: no locking the PC, no Mouse Keys. The hooks live as long as the platform.
+    caught_by: Option<crate::hooks::Hooks>,
     /// Service helper: switch to whichever desktop has input (normal, lock screen, UAC).
     follow: bool,
     desk: HDESK,
@@ -154,7 +148,7 @@ impl WinPlatform {
             pointer: ShowPointer::new(),
             win_held: 0,
             lock_key: LockKey::default(),
-            lock_directly: true,
+            caught_by: None,
             follow: false,
             desk: std::ptr::null_mut(),
             desk_name: String::new(),
@@ -162,6 +156,12 @@ impl WinPlatform {
         };
         p.refresh_virtual();
         p
+    }
+
+    /// Inject only into `hooks`, which catch it before any app sees it.
+    pub fn caught_by(mut self, hooks: crate::hooks::Hooks) -> Self {
+        self.caught_by = Some(hooks);
+        self
     }
 
     /// For the service helper (SYSTEM): follows input onto the lock screen and UAC prompts.
@@ -254,7 +254,7 @@ impl Injector for WinPlatform {
         if !down {
             self.win_held &= !bit;
         }
-        if self.lock_directly {
+        if self.caught_by.is_none() {
             match self.lock_key.step(c, down, self.win_held != 0) {
                 Step::Drop => return true,
                 // The mask tap keeps the Win release from opening Start afterwards.
@@ -307,7 +307,9 @@ impl Injector for WinPlatform {
             0,
             MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
         )]);
-        self.pointer.check();
+        if self.caught_by.is_none() {
+            self.pointer.check();
+        }
     }
 
     fn wheel(&mut self, v: i32, h: i32) {

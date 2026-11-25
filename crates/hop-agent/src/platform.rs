@@ -14,14 +14,12 @@ pub struct Usage {
 /// `swallow`: catch our own input before apps see it, and print it.
 #[cfg(windows)]
 pub fn injector(follow: bool, swallow: bool) -> Result<Box<dyn Platform>, String> {
-    if swallow {
-        let hooks = crate::hooks::Hooks::start(true).map_err(|e| format!("{e}; refusing to run in swallow mode"))?;
-        // The hooks must outlive the agent loop, which runs until the process exits.
-        Box::leak(Box::new(hooks));
+    let p = if follow { crate::win::WinPlatform::following() } else { crate::win::WinPlatform::new() };
+    if !swallow {
+        return Ok(Box::new(p));
     }
-    let mut p = if follow { crate::win::WinPlatform::following() } else { crate::win::WinPlatform::new() };
-    p.lock_directly = !swallow;
-    Ok(Box::new(p))
+    let hooks = crate::hooks::Hooks::start(true).map_err(|e| format!("{e}; refusing to run in swallow mode"))?;
+    Ok(Box::new(p.caught_by(hooks)))
 }
 
 #[cfg(not(windows))]
@@ -62,8 +60,8 @@ pub const STOP_EVENT_PREFIX: &str = "Global\\HopAgentStop-";
 pub fn on_service_stop(stop: std::sync::Arc<std::sync::atomic::AtomicBool>, name: &str) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
     use windows_sys::Win32::System::Threading::{OpenEventW, WaitForSingleObject, INFINITE};
-    const SYNCHRONIZE: u32 = 0x0010_0000;
     if !name.starts_with(STOP_EVENT_PREFIX) {
         return Err(format!("{name:?} is not a Hop stop event"));
     }
@@ -127,7 +125,7 @@ pub fn spawn_tied(cmd: &mut std::process::Command) -> std::io::Result<std::proce
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
     static JOB: OnceLock<usize> = OnceLock::new();
     let job = *JOB.get_or_init(|| unsafe {
         let j = CreateJobObjectW(std::ptr::null(), std::ptr::null());

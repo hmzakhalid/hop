@@ -47,7 +47,6 @@ use windows_sys::Win32::System::Threading::{
 const DISPLAY_NAME: &str = "Hop Agent";
 /// How long to wait for the service to change state.
 const STATE_TIMEOUT: Duration = Duration::from_secs(15);
-const STILL_ACTIVE: u32 = 259;
 /// Owner Administrators; protected DACL: full control for SYSTEM and Administrators only.
 const PRIVATE_SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 /// Stop events: only SYSTEM may open them.
@@ -209,8 +208,7 @@ fn stop_service() -> Result<(), String> {
 /// Delete the (stopped) service. `Ok(false)` if Windows has only marked it for deletion,
 /// because something still has it open.
 fn delete_service() -> Result<bool, String> {
-    const DELETE: u32 = 0x0001_0000; // the standard "delete" access right
-    match open_service(DELETE) {
+    match open_service(windows_sys::Win32::Storage::FileSystem::DELETE) {
         Ok((svc, _scm)) => unsafe {
             if DeleteService(svc.0) == 0 {
                 let code = GetLastError();
@@ -515,7 +513,7 @@ fn new_stop_event() -> Option<(HANDLE, String)> {
 fn exit_code(p: HANDLE) -> Option<u32> {
     let mut code = 0u32;
     let ok = unsafe { GetExitCodeProcess(p, &mut code) } != 0;
-    (!ok || code != STILL_ACTIVE).then_some(code)
+    (!ok || code != windows_sys::Win32::Foundation::STILL_ACTIVE as u32).then_some(code)
 }
 
 /// Ask the helper to release everything and exit; force it after a moment.
