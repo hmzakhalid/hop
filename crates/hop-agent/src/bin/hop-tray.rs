@@ -128,7 +128,7 @@ mod tray {
         let menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide(&status()).as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, CMD_PAIR, wide("Pair a Mac…").as_ptr());
+        AppendMenuW(menu, MF_STRING, CMD_PAIR, wide(&format!("{}…", hop_core::ui::PC_PAIR_ITEM)).as_ptr());
         AppendMenuW(menu, MF_STRING, CMD_ABOUT, wide("About Hop").as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
         AppendMenuW(menu, MF_STRING, CMD_QUIT, wide("Hide This Icon").as_ptr());

@@ -301,6 +301,42 @@ pub fn ik_respond(
 
 // ---- pairing over TCP ----------------------------------------------------------------------
 
+/// Why pairing did not work. Its text is a sentence for whoever sees it, on either machine.
+#[derive(Debug)]
+pub enum PairError {
+    /// The two machines used different codes.
+    WrongCode,
+    /// What was typed is not a pairing code.
+    NotACode,
+    /// The exchange did not finish before its deadline.
+    TooLong,
+    /// The network, or the other machine, failed.
+    Io(io::Error),
+}
+
+impl std::fmt::Display for PairError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PairError::WrongCode => write!(f, "The code did not match."),
+            PairError::NotACode => write!(f, "A code is 12 letters and digits, like 7K2P-9QXM-4D8T."),
+            PairError::TooLong => write!(f, "Pairing took too long."),
+            PairError::Io(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for PairError {}
+
+impl From<io::Error> for PairError {
+    fn from(e: io::Error) -> Self {
+        // A socket timeout reads `WouldBlock` on macOS and `TimedOut` on Windows.
+        match e.kind() {
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => PairError::TooLong,
+            _ => PairError::Io(e),
+        }
+    }
+}
+
 /// Longest the code exchange may take once connected, on either end. The PC also stops at its
 /// code's expiry, whichever comes first.
 pub const PAIRING_EXCHANGE: Duration = Duration::from_secs(10);
@@ -312,25 +348,13 @@ struct Bounded<'a> {
     until: Instant,
 }
 
-fn too_long() -> io::Error {
-    err(io::ErrorKind::TimedOut, "pairing took too long")
-}
-
 impl Bounded<'_> {
     fn left(&self) -> io::Result<Duration> {
         let left = self.until.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err(too_long());
+            return Err(io::ErrorKind::TimedOut.into());
         }
         Ok(left)
-    }
-}
-
-/// A socket timeout is reported as `WouldBlock` on macOS and `TimedOut` on Windows.
-fn timed_out(e: io::Error) -> io::Error {
-    match e.kind() {
-        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => too_long(),
-        _ => e,
     }
 }
 
@@ -338,7 +362,7 @@ impl Read for Bounded<'_> {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
         let left = self.left()?;
         self.s.set_read_timeout(Some(left))?;
-        self.s.read(b).map_err(timed_out)
+        self.s.read(b)
     }
 }
 
@@ -346,7 +370,7 @@ impl Write for Bounded<'_> {
     fn write(&mut self, b: &[u8]) -> io::Result<usize> {
         let left = self.left()?;
         self.s.set_write_timeout(Some(left))?;
-        self.s.write(b).map_err(timed_out)
+        self.s.write(b)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -380,9 +404,9 @@ pub struct Paired {
 }
 
 /// Mac side of pairing, finished by `until`. `code` is what the user typed.
-pub fn pair_initiator(s: &mut TcpStream, until: Instant, local: &StaticKeys, code: &str, my_name: &str) -> io::Result<Paired> {
+pub fn pair_initiator(s: &mut TcpStream, until: Instant, local: &StaticKeys, code: &str, my_name: &str) -> Result<Paired, PairError> {
     let s = &mut Bounded { s, until };
-    let code = normalize_code(code).ok_or_else(|| err(io::ErrorKind::InvalidInput, "a code is 12 letters or digits"))?;
+    let code = normalize_code(code).ok_or(PairError::NotACode)?;
     let psk = psk_from_code(&code);
     let mut hs = pair_builder(local, &psk).and_then(|b| b.build_initiator()).map_err(noise_err)?;
     let mut buf = vec![0u8; 1024];
@@ -399,28 +423,20 @@ pub fn pair_initiator(s: &mut TcpStream, until: Instant, local: &StaticKeys, cod
     let n = hs.write_message(truncate_utf8(my_name, MAX_NAME).as_bytes(), &mut buf).map_err(noise_err)?;
     send_frame(s, &buf[..n])?;
     // Only a PC that knows the code can produce this confirmation.
-    let confirm = recv_frame(s).map_err(|e| {
-        if e.kind() == io::ErrorKind::UnexpectedEof {
-            err(io::ErrorKind::PermissionDenied, "the PC rejected the code")
-        } else {
-            e
-        }
-    })?;
+    // The PC hangs up instead of confirming a code it does not share.
+    let confirm = recv_frame(s).map_err(|e| if e.kind() == io::ErrorKind::UnexpectedEof { PairError::WrongCode } else { e.into() })?;
     let mut t = hs.into_transport_mode().map_err(noise_err)?;
-    let n = t
-        .read_message(&confirm, &mut payload)
-        .map_err(|_| err(io::ErrorKind::PermissionDenied, "wrong code"))?;
+    let n = t.read_message(&confirm, &mut payload).map_err(|_| PairError::WrongCode)?;
     if &payload[..n] != PAIR_CONFIRM {
-        return Err(err(io::ErrorKind::PermissionDenied, "wrong code"));
+        return Err(PairError::WrongCode);
     }
     Ok(Paired { public: pc_key, name: pc_name })
 }
 
-/// PC side of pairing, finished by `until` (no confirmation is sent after it). Fails with
-/// `PermissionDenied` when the Mac used a different code.
-pub fn pair_responder(s: &mut TcpStream, until: Instant, local: &StaticKeys, code: &str, my_name: &str) -> io::Result<Paired> {
+/// PC side of pairing, finished by `until` (no confirmation is sent after it).
+pub fn pair_responder(s: &mut TcpStream, until: Instant, local: &StaticKeys, code: &str, my_name: &str) -> Result<Paired, PairError> {
     let s = &mut Bounded { s, until };
-    let code = normalize_code(code).ok_or_else(|| err(io::ErrorKind::InvalidInput, "bad code"))?;
+    let code = normalize_code(code).ok_or(PairError::NotACode)?;
     let psk = psk_from_code(&code);
     let mut hs = pair_builder(local, &psk).and_then(|b| b.build_responder()).map_err(noise_err)?;
     let mut buf = vec![0u8; 1024];
@@ -430,9 +446,7 @@ pub fn pair_responder(s: &mut TcpStream, until: Instant, local: &StaticKeys, cod
     let n = hs.write_message(truncate_utf8(my_name, MAX_NAME).as_bytes(), &mut buf).map_err(noise_err)?;
     send_frame(s, &buf[..n])?;
     let m3 = recv_frame(s)?;
-    let n = hs
-        .read_message(&m3, &mut payload)
-        .map_err(|_| err(io::ErrorKind::PermissionDenied, "wrong code"))?;
+    let n = hs.read_message(&m3, &mut payload).map_err(|_| PairError::WrongCode)?;
     let mac_name = String::from_utf8_lossy(&payload[..n]).into_owned();
     let mac_key: [u8; 32] = hs
         .get_remote_static()
@@ -527,7 +541,7 @@ mod tests {
         assert!(ik_respond(&impostor, &p1, |_| true).is_err());
     }
 
-    fn run_pairing(mac_code: &str, pc_code: &str) -> (io::Result<Paired>, io::Result<Paired>, StaticKeys, StaticKeys) {
+    fn run_pairing(mac_code: &str, pc_code: &str) -> (Result<Paired, PairError>, Result<Paired, PairError>, StaticKeys, StaticKeys) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         let pc = StaticKeys::generate();
@@ -571,7 +585,7 @@ mod tests {
         let (mut s, _) = l.accept().unwrap();
         let t = Instant::now();
         let r = pair_responder(&mut s, Instant::now() + Duration::from_millis(300), &StaticKeys::generate(), &new_pairing_code(), "PC");
-        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(matches!(r, Err(PairError::TooLong)), "{r:?}");
         assert!(t.elapsed() < Duration::from_millis(900), "gave up after {:?}", t.elapsed());
         drop(s);
         client.join().unwrap();
@@ -580,7 +594,7 @@ mod tests {
     #[test]
     fn pairing_with_the_wrong_code_fails_on_both_sides() {
         let (m, p, _, _) = run_pairing("0000-0000-0000", "0000-0000-0001");
-        assert_eq!(p.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
-        assert_eq!(m.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert!(matches!(p, Err(PairError::WrongCode)), "{p:?}");
+        assert!(matches!(m, Err(PairError::WrongCode)), "{m:?}");
     }
 }

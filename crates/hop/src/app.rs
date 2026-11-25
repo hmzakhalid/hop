@@ -13,6 +13,7 @@ use crate::{hud, login, macos, pc, prefs, updates};
 use hop_core::controller::ControllerConfig;
 use hop_core::layout::Side;
 use hop_core::link::{Found, Link};
+use hop_core::ui::{MAC_PAIR_ITEM, PC_PAIR_ITEM};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
@@ -395,7 +396,8 @@ impl Menu {
             self.add(menu, &format!("Show {name}'s Screen"), Some(sel!(showScreen:)));
         }
         let paired = !matches!(conn, Conn::NotPaired | Conn::NeedsAccess) || pc::store().peer().is_some();
-        self.add(menu, if paired { "Pair with Another PC…" } else { "Pair with a PC…" }, Some(sel!(pairPC:)));
+        let pair = if paired { "Pair with Another PC…".to_string() } else { format!("{MAC_PAIR_ITEM}…") };
+        self.add(menu, &pair, Some(sel!(pairPC:)));
         if paired {
             self.add(menu, "Forget This PC…", Some(sel!(forgetPC:)));
         }
@@ -545,7 +547,7 @@ fn ask_for_code(found: Result<Vec<Found>, String>) -> Choice {
         Ok(f) if !f.is_empty() => f,
         other => {
             let why = other.err().unwrap_or_else(|| {
-                "Install Hop on your Windows PC, on the same network as this Mac. Then, on the PC, open the Hop icon in the taskbar and choose \"Pair a Mac\".".into()
+                format!("Install Hop on your Windows PC, on the same network as this Mac. Then, on the PC, open the Hop icon in the taskbar and choose \"{PC_PAIR_ITEM}\".")
             });
             return if show_alert(mtm, "No PC found", &why, &["Search Again", "Cancel"], None) == 0 { Choice::SearchAgain } else { Choice::Cancel };
         }
@@ -560,8 +562,8 @@ fn ask_for_code(found: Result<Vec<Found>, String>) -> Choice {
     let field = NSTextField::initWithFrame(NSTextField::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, 24.0)));
     field.setPlaceholderString(Some(ns_string!("Code shown on the PC")));
     view.addSubview(&field);
-    let info = "On the PC, open the Hop icon in the taskbar and choose \"Pair a Mac\", then type the code it shows.";
-    if show_alert(mtm, "Pair with a PC", info, &["Pair", "Cancel"], Some(&view)) != 0 {
+    let info = format!("On the PC, open the Hop icon in the taskbar and choose \"{PC_PAIR_ITEM}\", then type the code it shows.");
+    if show_alert(mtm, MAC_PAIR_ITEM, &info, &["Pair", "Cancel"], Some(&view)) != 0 {
         return Choice::Cancel;
     }
     let pick = popup.indexOfSelectedItem().clamp(0, found.len() as isize - 1) as usize;

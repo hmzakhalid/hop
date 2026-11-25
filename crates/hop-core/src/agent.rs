@@ -129,7 +129,7 @@ fn accept_pairing(
                 match crypto::pair_responder(&mut s, until, keys, &window.code, name) {
                     Ok(p) => return Some(p),
                     Err(e) => {
-                        if e.kind() == io::ErrorKind::PermissionDenied {
+                        if matches!(e, crypto::PairError::WrongCode) {
                             failures += 1;
                         }
                         failed(e.to_string());

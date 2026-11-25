@@ -2,7 +2,9 @@
 //! command line alike; errors are sentences for the user.
 
 use crate::macos;
+use hop_core::crypto::PairError;
 use hop_core::link::{self, Found, Link};
+use hop_core::ui::PC_PAIR_ITEM;
 use hop_core::store::{MacStore, PcRecord};
 use hop_core::wire::DEFAULT_PORT;
 use std::io;
@@ -49,11 +51,13 @@ pub fn pair_with(addr: SocketAddr, code: &str) -> Result<PcRecord, String> {
     let saving = |e: io::Error| format!("Could not save the pairing: {e}");
     let generation = store.lock().and_then(|mut l| l.new_generation()).map_err(saving)?; // unlocked during the handshake
     let keys = store.keys().map_err(|e| format!("cannot read or create this Mac's key in {}: {e}", store.dir.display()))?;
-    let p = link::pair(addr, &keys, code, &macos::host_name()).map_err(|e| match e.kind() {
-        io::ErrorKind::PermissionDenied => "That code is not right. Show a fresh one on the PC and try again.".to_string(),
-        io::ErrorKind::ConnectionRefused => "The PC is not accepting pairing right now. Choose \"Pair a Mac\" on the PC first.".to_string(),
-        io::ErrorKind::InvalidInput => "A code is 12 letters and digits, like 7K2P-9QXM-4D8T.".to_string(),
-        _ => format!("Pairing failed: {e}"),
+    let p = link::pair(addr, &keys, code, &macos::host_name()).map_err(|e| match e {
+        PairError::WrongCode => "That code is not right. Show a fresh one on the PC and try again.".to_string(),
+        PairError::Io(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+            format!("The PC is not accepting pairing right now. Choose \"{PC_PAIR_ITEM}\" on the PC first.")
+        }
+        PairError::NotACode | PairError::TooLong => e.to_string(),
+        PairError::Io(e) => format!("Pairing failed: {e}"),
     })?;
     let rec = PcRecord { public: p.public, name: p.name, addr: Some(addr) };
     let lock = store.lock().map_err(saving)?;

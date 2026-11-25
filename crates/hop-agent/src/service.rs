@@ -308,7 +308,10 @@ pub fn revoke_service_pairing() -> Result<bool, String> {
 /// service can type on the lock screen and into UAC prompts.
 pub fn pair_beside_service(name: Option<String>, port: u16) -> Result<(), String> {
     if !is_elevated() {
-        return Err("the Hop service is installed, so pairing needs an administrator: choose \"Pair a Mac\" from the Hop icon in the taskbar, or run this in an administrator terminal".into());
+        return Err(format!(
+            "the Hop service is installed, so pairing needs an administrator: choose \"{}\" from the Hop icon in the taskbar, or run this in an administrator terminal",
+            hop_core::ui::PC_PAIR_ITEM
+        ));
     }
     let store = Role::Service.store();
     if !store.dir.is_dir() {

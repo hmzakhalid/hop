@@ -1,6 +1,6 @@
 //! Mac-side networking: discovery, pairing, and an encrypted UDP link to the paired PC.
 
-use crate::crypto::{self, IkInitiator, Paired, Session, StaticKeys};
+use crate::crypto::{self, IkInitiator, PairError, Paired, Session, StaticKeys};
 use crate::wire::{self, Msg, MAX_PACKET, PKT_DATA, PKT_SESSION_ACCEPT, PKT_UNKNOWN_SESSION};
 use std::cell::RefCell;
 use std::io;
@@ -73,9 +73,9 @@ pub fn discover(port: u16, targets: &[IpAddr], wait: Duration) -> io::Result<Vec
 }
 
 /// Pair with the PC at `addr` (its UDP/TCP port) using the code it shows.
-pub fn pair(addr: SocketAddr, keys: &StaticKeys, code: &str, my_name: &str) -> io::Result<Paired> {
+pub fn pair(addr: SocketAddr, keys: &StaticKeys, code: &str, my_name: &str) -> Result<Paired, PairError> {
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
-    s.set_nodelay(true)?;
+    let _ = s.set_nodelay(true); // latency only
     crypto::pair_initiator(&mut s, Instant::now() + crypto::PAIRING_EXCHANGE, keys, code, my_name)
 }
 

@@ -142,8 +142,9 @@ fn lan_address() -> Option<String> {
 
 /// How a pairing code is shown to the user.
 pub fn pairing_banner(code: &str) -> String {
+    use hop_core::ui::MAC_PAIR_ITEM;
     format!(
-        "\n  Pairing code:  {code}\n\n  On the Mac, choose \"Pair with a PC\" from the Hop menu (or run: hop pair)\n  and type the code. It works once, expires in {} minutes,\n  and closes after {PAIRING_MAX_FAILURES} wrong tries.\n",
+        "\n  Pairing code:  {code}\n\n  On the Mac, choose \"{MAC_PAIR_ITEM}\" from the Hop menu (or run: hop pair)\n  and type the code. It works once, expires in {} minutes,\n  and closes after {PAIRING_MAX_FAILURES} wrong tries.\n",
         PAIRING_TTL.as_secs() / 60
     )
 }

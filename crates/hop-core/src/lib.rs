@@ -27,5 +27,6 @@ pub mod session;
 pub mod stats;
 pub mod store;
 pub mod stream;
+pub mod ui;
 pub mod video;
 pub mod wire;
