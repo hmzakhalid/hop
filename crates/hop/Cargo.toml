@@ -1,0 +1,24 @@
+[package]
+name = "hop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Hop for macOS: drive a Windows PC with this Mac's keyboard and trackpad"
+
+[features]
+# hop drive, hop view, hop badge. Packaging builds without them.
+default = ["dev-tools"]
+dev-tools = []
+
+[dependencies]
+hop-core = { path = "../hop-core" }
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSPanel", "NSWindow", "NSView", "NSTextField", "NSControl", "NSColor", "NSFont", "NSScreen", "NSGraphics", "NSRunningApplication", "NSText", "NSBox", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSMenu", "NSMenuItem", "NSImage", "NSAlert", "NSPopUpButton", "NSWorkspace", "NSCell", "NSButtonCell", "NSUserInterfaceItemIdentification", "NSCell", "NSMenuItemCell", "NSPopUpButtonCell", "NSActionCell", "NSCursor", "objc2-core-foundation", "objc2-quartz-core"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVSampleBufferDisplayLayer", "AVSampleBufferVideoRenderer", "AVQueuedSampleBufferRendering", "AVAnimation", "objc2-core-media", "objc2-quartz-core"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFNumber", "CFBase"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGColor"] }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer", "CMBase", "CMTime", "CMAttachment"] }
+objc2-foundation = "0.3"
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }

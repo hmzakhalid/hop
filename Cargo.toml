@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/hop-core", "crates/hop", "crates/hop-agent", "crates/hop-video"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+repository = "https://github.com/hmzakhalid/hop"
+
+[workspace.dependencies]
+snow = "0.10"
+blake2 = "0.10"
+rand = "0.8"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,330 @@
+//! PC-side networking: answers discovery, runs pairing, accepts sessions only from the paired
+//! Mac, and feeds state datagrams to the [`Receiver`].
+
+use crate::clock::now_us;
+use crate::crypto::{self, Paired, Session, StaticKeys};
+use crate::receiver::{Injector, Receiver};
+use crate::wire::{self, Ack, Monitor, Msg, ACK_ACTIVE, ACK_BLOCKED, ACK_EPOCH_DEAD, MAX_PACKET, PKT_DATA, PKT_PROBE, PKT_SESSION_INIT};
+use std::io;
+use std::net::{SocketAddr, TcpListener, UdpSocket};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// Everything the agent needs from the operating system.
+pub trait Platform: Injector {
+    /// Monitor rectangles in physical pixels on the virtual desktop, with DPI scale.
+    fn monitors(&mut self) -> Vec<Monitor>;
+    fn cursor_pos(&mut self) -> (i32, i32);
+    /// True while input cannot be injected (lock screen, UAC prompt).
+    fn input_blocked(&mut self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug)]
+pub enum AgentEvent {
+    Listening(SocketAddr),
+    Paired(Paired),
+    PairingFailed(String),
+    SessionStarted(SocketAddr),
+}
+
+/// How long a pairing code stays valid.
+pub const PAIRING_TTL: Duration = Duration::from_secs(120);
+/// Wrong codes tolerated before pairing closes.
+pub const PAIRING_MAX_FAILURES: u32 = 3;
+
+/// A pairing code on offer.
+pub struct PairingWindow {
+    pub code: String,
+    until: Instant,
+}
+
+impl PairingWindow {
+    pub fn new(code: String) -> Self {
+        Self { code, until: Instant::now() + PAIRING_TTL }
+    }
+}
+
+pub struct AgentConfig {
+    pub bind: SocketAddr,
+    pub name: String,
+    pub keys: StaticKeys,
+    pub paired: Option<[u8; 32]>,
+    pub pairing: Option<PairingWindow>,
+}
+
+type Events = Arc<dyn Fn(AgentEvent) + Send + Sync>;
+
+/// How long the loop waits for a packet before servicing timers (dead-man, monitors).
+const POLL: Duration = Duration::from_millis(20);
+/// Most packets handled per batch, and longest batch, so a flood cannot starve the timers.
+const BATCH_PACKETS: u32 = 64;
+const BATCH_TIME: Duration = Duration::from_millis(2);
+/// Acks are sent at once when something changed, else at most this often.
+const ACK_INTERVAL_US: u64 = 10_000;
+/// Fewest gap between unauthenticated "unknown session" hints.
+pub(crate) const UNKNOWN_HINT_INTERVAL: Duration = Duration::from_millis(100);
+
+fn spawn_pairing(
+    listener: TcpListener,
+    window: PairingWindow,
+    keys: StaticKeys,
+    name: String,
+    paired: Arc<Mutex<Option<[u8; 32]>>>,
+    events: Events,
+    stop: Arc<AtomicBool>,
+) {
+    std::thread::spawn(move || {
+        let failed = |why: String| events(AgentEvent::PairingFailed(why));
+        if let Some(p) = accept_pairing(&listener, &window, &keys, &name, &stop, &failed) {
+            *paired.lock().unwrap() = Some(p.public);
+            events(AgentEvent::Paired(p));
+        }
+    });
+}
+
+/// Pair once, without running the agent: listen on `bind` (TCP) until a Mac pairs with the code,
+/// the window closes, or `stop`. For pairing while the Windows service runs the agent: it holds
+/// the UDP port but never the TCP one.
+pub fn pair(
+    bind: SocketAddr,
+    window: &PairingWindow,
+    keys: &StaticKeys,
+    name: &str,
+    stop: &AtomicBool,
+    failed: impl Fn(String),
+) -> io::Result<Option<Paired>> {
+    let listener = TcpListener::bind(bind)?;
+    Ok(accept_pairing(&listener, window, keys, name, stop, &failed))
+}
+
+fn accept_pairing(
+    listener: &TcpListener,
+    window: &PairingWindow,
+    keys: &StaticKeys,
+    name: &str,
+    stop: &AtomicBool,
+    failed: &dyn Fn(String),
+) -> Option<Paired> {
+    // Non-blocking, so the time limit holds even if nobody connects.
+    if let Err(e) = listener.set_nonblocking(true) {
+        failed(e.to_string());
+        return None;
+    }
+    let mut failures = 0;
+    while !stop.load(Ordering::Relaxed) && Instant::now() < window.until && failures < PAIRING_MAX_FAILURES {
+        match listener.accept() {
+            Ok((mut s, _)) => {
+                // Timeouts, so a client that stalls cannot hold pairing open.
+                let limits = s.set_nonblocking(false).and_then(|_| s.set_read_timeout(Some(Duration::from_secs(10))));
+                if let Err(e) = limits.and_then(|_| s.set_write_timeout(Some(Duration::from_secs(10)))) {
+                    failed(e.to_string());
+                    continue;
+                }
+                let _ = s.set_nodelay(true); // latency only
+                match crypto::pair_responder(&mut s, keys, &window.code, name) {
+                    Ok(p) => return Some(p),
+                    Err(e) => {
+                        if e.kind() == io::ErrorKind::PermissionDenied {
+                            failures += 1;
+                        }
+                        failed(e.to_string());
+                    }
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => {
+                failed(e.to_string());
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+    None
+}
+
+struct Peer {
+    session: Arc<Session>,
+    addr: SocketAddr,
+}
+
+impl Peer {
+    fn send(&self, sock: &UdpSocket, msg: &Msg) {
+        // Lost like any datagram; the Mac's lease and retransmits cover it.
+        let _ = self.session.send(sock, self.addr, msg);
+    }
+}
+
+/// Run until `stop` is set.
+pub fn run(
+    cfg: AgentConfig,
+    platform: &mut dyn Platform,
+    stop: Arc<AtomicBool>,
+    events: impl Fn(AgentEvent) + Send + Sync + 'static,
+) -> io::Result<()> {
+    let events: Events = Arc::new(events);
+    let paired = Arc::new(Mutex::new(cfg.paired));
+    // UDP and TCP (pairing) share one port number. With port 0 (tests), the number the OS picks
+    // for UDP may be taken for TCP, so try again with another.
+    let mut attempt = 0;
+    let (sock, listener) = loop {
+        let sock = UdpSocket::bind(cfg.bind)?;
+        if cfg.pairing.is_none() {
+            break (sock, None);
+        }
+        match TcpListener::bind(sock.local_addr()?) {
+            Ok(l) => break (sock, Some(l)),
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse && cfg.bind.port() == 0 && attempt < 20 => attempt += 1,
+            Err(e) => return Err(e),
+        }
+    };
+    let local = sock.local_addr()?;
+    if let (Some(window), Some(listener)) = (cfg.pairing, listener) {
+        spawn_pairing(listener, window, cfg.keys.clone(), cfg.name.clone(), paired.clone(), events.clone(), stop.clone());
+    }
+    events(AgentEvent::Listening(local));
+    sock.set_read_timeout(Some(POLL))?;
+
+    let mut receiver = Receiver::default();
+    let mut current: Option<Peer> = None;
+    let mut pending: Option<Peer> = None;
+    let mut monitors = platform.monitors();
+    let mut monitors_at = Instant::now();
+    let mut blocked = false;
+    let mut blocked_at = Instant::now();
+    let mut last_ack_us = 0u64;
+    let mut last_unknown = Instant::now() - Duration::from_secs(1);
+    let mut buf = vec![0u8; MAX_PACKET];
+    let mut plain = Vec::with_capacity(MAX_PACKET);
+
+    while !stop.load(Ordering::Relaxed) {
+        let first = match sock.recv_from(&mut buf) {
+            Ok(x) => Some(x),
+            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => None,
+            Err(e) if e.kind() == io::ErrorKind::ConnectionReset => None, // Windows ICMP noise
+            Err(e) => return Err(e),
+        };
+        let mut ack_due: Option<(crate::receiver::AckInfo, u64)> = None;
+        if let Some(mut got) = first {
+            sock.set_nonblocking(true)?;
+            // Bounded, so a flood of junk can never starve the dead-man timer or shutdown.
+            let batch_start = Instant::now();
+            let mut batch = 0;
+            loop {
+                batch += 1;
+                let (n, from) = got;
+                let now = now_us();
+                let pkt = &buf[..n];
+                match pkt.first() {
+                    Some(&PKT_PROBE) => {
+                        if let Some(id) = wire::decode_probe(pkt) {
+                            let _ = sock.send_to(&wire::encode_probe_reply(id, &cfg.keys.public, &cfg.name), from);
+                        }
+                    }
+                    Some(&PKT_SESSION_INIT) => {
+                        let allowed = *paired.lock().unwrap();
+                        if let Some(mac) = allowed {
+                            if let Ok((sess, reply)) = crypto::ik_respond(&cfg.keys, pkt, |k| *k == mac) {
+                                let _ = sock.send_to(&reply, from);
+                                // Promoted only when it carries its first valid datagram, so a
+                                // replayed SESSION_INIT cannot cut off the live session.
+                                pending = Some(Peer { session: Arc::new(sess), addr: from });
+                            }
+                        }
+                    }
+                    Some(&PKT_DATA) => {
+                        let idx = Session::data_index(pkt);
+                        let mut nonce = None;
+                        if let Some(p) = pending.as_ref().filter(|p| Some(p.session.local_index) == idx) {
+                            if let Some(n) = p.session.open(pkt, &mut plain) {
+                                nonce = Some(n);
+                                receiver.reset(platform);
+                                let mut p = pending.take().unwrap();
+                                p.addr = from;
+                                events(AgentEvent::SessionStarted(from));
+                                current = Some(p);
+                            }
+                        } else if let Some(c) = current.as_mut().filter(|c| Some(c.session.local_index) == idx) {
+                            if let Some(n) = c.session.open(pkt, &mut plain) {
+                                nonce = Some(n);
+                                c.addr = from;
+                            }
+                        } else if let Some(idx) = idx {
+                            if last_unknown.elapsed() > UNKNOWN_HINT_INTERVAL {
+                                last_unknown = Instant::now();
+                                let _ = sock.send_to(&wire::encode_unknown_session(idx), from);
+                            }
+                        }
+                        if let Some(nonce) = nonce {
+                            match Msg::decode(&plain) {
+                                Some(Msg::State(s)) => {
+                                    if let Some(info) = receiver.on_state(now, nonce, &s, platform) {
+                                        let progressed = info.progressed || ack_due.is_some_and(|(a, _)| a.progressed);
+                                        ack_due = Some((crate::receiver::AckInfo { progressed, ..info }, now));
+                                    }
+                                }
+                                Some(Msg::Ping { t }) => {
+                                    if let Some(c) = &current {
+                                        c.send(&sock, &Msg::Pong { t });
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if batch >= BATCH_PACKETS || batch_start.elapsed() > BATCH_TIME {
+                    break;
+                }
+                match sock.recv_from(&mut buf) {
+                    Ok(x) => got = x,
+                    Err(_) => break,
+                }
+            }
+            sock.set_nonblocking(false)?;
+            receiver.flush(platform);
+        }
+
+        let now = now_us();
+        receiver.tick(now, platform);
+        if monitors_at.elapsed() > Duration::from_secs(1) {
+            monitors = platform.monitors();
+            monitors_at = Instant::now();
+        }
+        if blocked_at.elapsed() > Duration::from_millis(200) {
+            blocked = platform.input_blocked();
+            blocked_at = Instant::now();
+        }
+        if let (Some((info, recv_at)), Some(c)) = (ack_due, current.as_ref()) {
+            if info.progressed || !info.active || info.dead || now.saturating_sub(last_ack_us) >= ACK_INTERVAL_US {
+                let (cx, cy) = platform.cursor_pos();
+                let mut flags = 0;
+                if info.active {
+                    flags |= ACK_ACTIVE;
+                }
+                if info.dead {
+                    flags |= ACK_EPOCH_DEAD;
+                }
+                if blocked {
+                    flags |= ACK_BLOCKED;
+                }
+                let ack = Ack {
+                    epoch: info.epoch,
+                    applied_event: info.applied,
+                    echo_time_us: info.echo_time_us,
+                    hold_us: now_us().saturating_sub(recv_at).min(u32::MAX as u64) as u32,
+                    flags,
+                    cursor_x: cx,
+                    cursor_y: cy,
+                    monitors: monitors.clone(),
+                };
+                c.send(&sock, &Msg::Ack(ack));
+                last_ack_us = now;
+            }
+        }
+    }
+    receiver.release_all(platform);
+    Ok(())
+}

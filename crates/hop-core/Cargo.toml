@@ -1,0 +1,13 @@
+[package]
+name = "hop-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Shared protocol, crypto, key mapping and state machines for Hop"
+
+[dependencies]
+snow.workspace = true
+blake2.workspace = true
+rand.workspace = true
+reed-solomon-erasure = "6.0.0"

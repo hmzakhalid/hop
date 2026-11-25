@@ -1,0 +1,31 @@
+// Icon and version information for hop-agent.exe and hop-tray.exe (compiled by build.rs).
+#include <winver.h>
+
+1 ICON "hop.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     HOP_VERSION_COMMA
+PRODUCTVERSION  HOP_VERSION_COMMA
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     0x0L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "CompanyName", "Hop"
+      VALUE "FileDescription", "Hop: use your Mac's keyboard and trackpad on this PC"
+      VALUE "FileVersion", HOP_VERSION_STR
+      VALUE "ProductName", "Hop"
+      VALUE "ProductVersion", HOP_VERSION_STR
+      VALUE "LegalCopyright", "(c) 2026 the Hop authors. Free software under the GPL-3.0."
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
