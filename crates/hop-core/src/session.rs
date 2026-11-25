@@ -76,7 +76,6 @@ impl Session {
         swallow
     }
 
-    /// Whether something asked the timer to run again at once; clears the request.
     #[cfg(test)]
     fn take_wake(&self) -> bool {
         std::mem::take(&mut *self.wake.0.lock().unwrap())

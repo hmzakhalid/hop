@@ -15,7 +15,7 @@ pub enum KeyAction {
     Repeat,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapConfig {
     /// Cmd → Win and Control → Ctrl (positional, for people who prefer Windows muscle memory).
     pub cmd_as_win: bool,

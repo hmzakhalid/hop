@@ -8,8 +8,7 @@
 # change between versions: Hop.dmg and Hop-Setup.exe.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
-source "$HERE/macos/config.sh"
+source "$HERE/common.sh"
 PUBLISH=0
 for a in "$@"; do
   case "$a" in
@@ -17,7 +16,6 @@ for a in "$@"; do
     *) echo "unknown option $a" >&2; exit 2 ;;
   esac
 done
-VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)
 TAG="v$VERSION"
 
 # A committed tree: the build id inside both apps names a commit anyone can look up.
@@ -44,15 +42,9 @@ NOTES=$(awk -v v="$VERSION" '$0 ~ "^## " { if (on) exit; on = ($2 == v) } on' "$
 
 # Nothing private in what ships. The DMG and the installer are compressed, so check the programs
 # that go into them.
-BINARIES=(
-  "$ROOT/target/aarch64-apple-darwin/release/hop"
-  "$ROOT/target/x86_64-apple-darwin/release/hop"
-  "$ROOT/target/x86_64-pc-windows-gnu/release/hop-agent.exe"
-  "$ROOT/target/x86_64-pc-windows-gnu/release/hop-tray.exe"
-)
 PRIVATE=("$HOME" "/Users/$(id -un)" "$(scutil --get ComputerName 2>/dev/null || true)" "$(scutil --get LocalHostName 2>/dev/null || true)"
          "$(git config --global user.email 2>/dev/null || true)" "$(git -C "$ROOT" config user.email 2>/dev/null || true)")
-for b in "${BINARIES[@]}"; do
+for b in "${SHIPPED_PROGRAMS[@]}"; do
   # Read the whole text first: piping strings into grep -q fails open under pipefail.
   text=$(strings -a "$b") && [ -n "$text" ] || { echo "Could not read $b. Not releasing." >&2; exit 1; }
   for p in "${PRIVATE[@]}"; do
@@ -64,13 +56,13 @@ for b in "${BINARIES[@]}"; do
   done
 done
 echo "== no private paths or names in the binaries"
-signature=$(codesign -dv "$ROOT/dist/$APP_NAME.app" 2>&1) || { echo "Could not read Hop.app's signature." >&2; exit 1; }
+signature=$(codesign -dv "$MAC_APP" 2>&1) || { echo "Could not read Hop.app's signature." >&2; exit 1; }
 grep -q '^Authority=' <<<"$signature" || { echo "Hop.app is not certificate-signed. Not releasing." >&2; exit 1; }
 
 OUT="$ROOT/dist/release"
 rm -rf "$OUT" && mkdir -p "$OUT"
-cp "$ROOT/dist/Hop-$VERSION.dmg" "$OUT/Hop.dmg"
-cp "$ROOT/dist/Hop-Setup-$VERSION.exe" "$OUT/Hop-Setup.exe"
+cp "$MAC_DMG" "$OUT/Hop.dmg"
+cp "$WIN_SETUP" "$OUT/Hop-Setup.exe"
 (cd "$OUT" && shasum -a 256 Hop.dmg Hop-Setup.exe > SHA256SUMS.txt)
 cat "$OUT/SHA256SUMS.txt"
 

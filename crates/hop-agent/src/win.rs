@@ -1,4 +1,5 @@
-//! Windows input injection with `SendInput`.
+//! Windows input with `SendInput`, and what it needs around it: the desktop that has input,
+//! monitors and DPI, Mouse Keys for a pointer Windows hides, and ⌃L's direct lock.
 
 use crate::lock::{LockKey, Step};
 use hop_core::agent::Platform;
@@ -179,7 +180,7 @@ impl WinPlatform {
         }
         self.checked = std::time::Instant::now();
         unsafe {
-            let d = OpenInputDesktop(0, 0, 0x1000_0000 /* GENERIC_ALL */);
+            let d = OpenInputDesktop(0, 0, windows_sys::Win32::Foundation::GENERIC_ALL);
             if d.is_null() {
                 return;
             }
@@ -221,7 +222,6 @@ impl WinPlatform {
         }
     }
 
-    /// True if Windows accepted every input.
     fn send(inputs: &[INPUT]) -> bool {
         if inputs.is_empty() {
             return true;

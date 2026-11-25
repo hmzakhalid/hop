@@ -247,7 +247,7 @@ mod tests {
         let mac = UdpSocket::bind("127.0.0.1:0").unwrap();
         let mac_addr = mac.local_addr().unwrap();
         let link = Link::new(mac, StaticKeys::generate(), pc_keys.public, pc.local_addr().unwrap()).unwrap();
-        // Stray accepts with no handshake in flight (the first used to crash the app).
+        // Stray accepts, with no handshake in flight.
         for stray in [&[PKT_SESSION_ACCEPT][..], &[PKT_SESSION_ACCEPT, 1, 0, 0, 0, 2, 0, 0, 0]] {
             pc.send_to(stray, mac_addr).unwrap();
             assert!(matches!(link.recv().unwrap(), Event::Nothing));

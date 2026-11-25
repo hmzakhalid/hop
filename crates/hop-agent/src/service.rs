@@ -423,7 +423,7 @@ unsafe extern "system" fn handler(control: u32, _: u32, _: *mut core::ffi::c_voi
             0
         }
         SERVICE_CONTROL_INTERROGATE => 0,
-        _ => 120, // ERROR_CALL_NOT_IMPLEMENTED
+        _ => windows_sys::Win32::Foundation::ERROR_CALL_NOT_IMPLEMENTED,
     }
 }
 

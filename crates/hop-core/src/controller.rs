@@ -37,7 +37,7 @@ const CLOSING_DATAGRAMS: u8 = 20;
 /// Inactive datagrams after a leave with nothing in flight.
 const GOODBYE_DATAGRAMS: u8 = 2;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ControllerConfig {
     pub side: Side,
     /// Switch by pushing the pointer off a screen edge, in both directions. Off by default:
@@ -234,6 +234,12 @@ impl Controller {
     /// Where the Mac is moving the PC cursor (PC virtual-desktop pixels), while the PC has control.
     pub fn pc_cursor(&self) -> Option<(f64, f64)> {
         self.remote.as_ref().map(|r| r.pos)
+    }
+
+    /// This crossing's scroll so far, in whole Windows wheel units (vertical, horizontal), as
+    /// sent to the PC.
+    pub fn pc_scroll(&self) -> Option<(i64, i64)> {
+        self.remote.as_ref().map(|r| (r.scroll_v.trunc() as i64, r.scroll_h.trunc() as i64))
     }
 
     pub fn pc_monitors(&self) -> &[Monitor] {
@@ -827,12 +833,7 @@ mod tests {
 
     #[test]
     fn edge_exit_returns_to_the_mac() {
-        let mut c = Controller::new(
-            ControllerConfig { edges: true, ..ControllerConfig::default() },
-            vec![Rect::new(0.0, 0.0, 1512.0, 982.0)],
-        );
-        let t = 10 * MS;
-        c.ack(t, &pc_ack(0, 0, 0));
+        let (mut c, t) = ready();
         enter(&mut c, t);
         let o = c.mouse_moved(t + MS, (0.0, 0.0), (-5.0, 0.0), 0, false);
         match o.effect {

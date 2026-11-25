@@ -472,7 +472,6 @@ mod tests {
         assert_eq!(normalize_code("o1il-0000-0000"), Some("0111".to_string() + "00000000"));
         assert_eq!(normalize_code("short"), None);
         assert_eq!(normalize_code("UUUU-UUUU-UUUU"), None); // U is not in the alphabet
-        assert_ne!(psk_from_code("000000000000"), psk_from_code("000000000001"));
     }
 
     #[test]

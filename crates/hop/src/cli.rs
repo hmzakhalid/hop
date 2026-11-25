@@ -48,7 +48,6 @@ pub struct RunOptions {
     pub stats: bool,
 }
 
-/// Command words, each once.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Word {
     App,
@@ -208,8 +207,10 @@ mod tests {
         assert!(matches!(p("view").unwrap(), Command::View { host: None }));
         assert!(p("--speed 0").is_err());
         #[cfg(feature = "dev-tools")]
-        assert!(matches!(p("badge --side left").unwrap(), Command::Badge { side: Side::Left }));
-        assert!(p("badge --edges").is_err());
+        {
+            assert!(matches!(p("badge --side left").unwrap(), Command::Badge { side: Side::Left }));
+            assert!(p("badge --edges").is_err(), "badge takes only --side");
+        }
         assert!(p("app --host 1.2.3.4").is_err());
         assert!(matches!(p("--help"), Err(ParseError::Help)));
     }

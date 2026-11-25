@@ -106,8 +106,8 @@ fn proxy(to: SocketAddr, drop_pct: u32) -> (SocketAddr, Arc<AtomicBool>) {
                 seed ^= seed << 13;
                 seed ^= seed >> 7;
                 seed ^= seed << 17;
-                // Handshake replies (type 0x21) always pass, so the session can form.
-                if buf[0] != 0x21 && (seed % 100) < drop_pct as u64 {
+                // Handshake replies always pass, so the session can form.
+                if buf[0] != hop_core::wire::PKT_SESSION_ACCEPT && (seed % 100) < drop_pct as u64 {
                     continue;
                 }
                 if let Some(c) = client {
@@ -185,9 +185,10 @@ fn the_picture_comes_back_after_the_pc_restarts() {
 fn frames_arrive_intact_and_in_order() {
     let (pc, client, _) = setup(0);
     let frames = watch(&client, Duration::from_millis(1500));
-    // 1.5 s at the 60 fps cap is about 90 frames.
-    assert!(frames.len() > 60, "only {} frames", frames.len());
-    assert!(frames.len() <= 100, "the 60 fps cap holds: {} frames", frames.len());
+    // 1.5 s at the frame-rate cap, give or take the first frame's wait.
+    let cap = (1.5 * video::MAX_FPS as f64) as usize;
+    assert!(frames.len() > cap * 2 / 3, "only {} frames", frames.len());
+    assert!(frames.len() <= cap + 10, "the {} fps cap holds: {} frames", video::MAX_FPS, frames.len());
     assert!(frames[0].encoded.keyframe, "a viewer starts from a keyframe");
     assert!(frames.iter().all(intact), "every frame intact");
     assert!(frames.windows(2).all(|w| w[1].id > w[0].id), "in order");

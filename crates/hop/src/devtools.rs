@@ -1,5 +1,5 @@
 //! Developer tools, left out of packaged builds (`--no-default-features`): `hop drive`,
-//! `hop view --file`, `hop badge`.
+//! `hop view --file`, `hop badge`. (`hop menu` is in app.rs, beside the menu it prints.)
 
 use crate::{hud, macos, pc, view};
 use hop_core::controller::{Controller, ControllerConfig, Output};

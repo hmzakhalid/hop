@@ -225,11 +225,7 @@ impl Mac {
     }
 
     fn wait_for_pc(&self) {
-        let t = Instant::now();
-        while self.session.read(|c| c.pc_monitors().is_empty()) {
-            assert!(t.elapsed() < Duration::from_secs(5), "no ack from the PC");
-            thread::sleep(Duration::from_millis(5));
-        }
+        eventually("an ack from the PC", Duration::from_secs(5), || self.session.read(|c| !c.pc_monitors().is_empty()));
     }
 
     fn enter(&self) {
@@ -317,10 +313,15 @@ fn scenario(drop_pct: u32, dup_pct: u32, hold_pct: u32) {
         m.act(|c, now| c.scroll(now, 4.0, 0.0, true));
     }
     m.settle();
-    // Position and scroll are state, not transitions: wait for the last of it to land.
+    // Position and scroll are state, not transitions: wait for the last of it to land where the
+    // Mac put it.
+    let (pos, scroll) = m.session.read(|c| (c.pc_cursor(), c.pc_scroll()));
+    let pos = pos.map(|(x, y)| (x.floor() as i32, y.floor() as i32)).expect("still on the PC");
+    let (scroll_v, _) = scroll.expect("still on the PC");
+    assert!(scroll_v > 0, "the scrolls went somewhere");
     eventually("final cursor and scroll", Duration::from_secs(5), || {
         let r = agent.rec.lock().unwrap();
-        r.pos == (190, 590) && r.wheel_v == 100
+        r.pos == pos && r.wheel_v == scroll_v
     });
 
     {

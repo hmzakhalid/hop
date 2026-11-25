@@ -1,6 +1,7 @@
 #!/bin/bash
 # Build the app icons from the drawing: AppIcon.icns (macOS) and hop.ico (Windows).
-# Outputs go to packaging/icon/out/. Needs Xcode's swift, sips and iconutil (all on macOS).
+# Outputs go to packaging/icon/out/, and the Windows icon to crates/hop-agent/res/hop.ico.
+# Needs Xcode's swift, sips and iconutil (all on macOS).
 set -euo pipefail
 cd "$(dirname "$0")"
 OUT=out
@@ -15,5 +16,6 @@ mkdir -p "$OUT/ico"
 for s in 16 20 24 32 40 48 64 256; do
   sips -z $s $s "$OUT/master.png" --out "$OUT/ico/$s.png" >/dev/null
 done
-python3 -I ico.py "$OUT/hop.ico" "$OUT"/ico/{16,20,24,32,40,48,64,256}.png
-echo "icons: $OUT/AppIcon.icns $OUT/hop.ico"
+# Windows builds compile the committed copy into the programs (no Mac needed to build them).
+python3 -I ico.py ../../crates/hop-agent/res/hop.ico "$OUT"/ico/{16,20,24,32,40,48,64,256}.png
+echo "icons: $OUT/AppIcon.icns crates/hop-agent/res/hop.ico"

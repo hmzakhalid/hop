@@ -7,7 +7,7 @@ publish.workspace = true
 description = "Hop for macOS: drive a Windows PC with this Mac's keyboard and trackpad"
 
 [features]
-# hop drive, hop view, hop badge. Packaging builds without them.
+# hop drive, hop view --file, hop badge, hop menu. Packaging builds without them.
 default = ["dev-tools"]
 dev-tools = []
 

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Hop screen capture and hardware H.264 encoding for Windows"
+description = "Hop screen capture and hardware HEVC / H.264 encoding for Windows"
 
 [[bin]]
 name = "hop-capture"

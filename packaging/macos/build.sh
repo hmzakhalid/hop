@@ -10,9 +10,7 @@
 # certificate (make-local-identity.sh) or ad hoc, and Gatekeeper asks for "Open Anyway" once.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"
-source "$HERE/config.sh"
-source "$ROOT/packaging/cargo-release.sh"
+source "$HERE/../common.sh"
 
 DEV=0
 for a in "$@"; do
@@ -22,10 +20,8 @@ for a in "$@"; do
   esac
 done
 
-VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)
 BUILD=$(git -C "$ROOT" rev-list --count HEAD) # rises with every commit, as updates need
-DIST="$ROOT/dist"
-APP="$DIST/$APP_NAME.app"
+APP="$MAC_APP"
 FEATURES=(--no-default-features)
 [ "$DEV" = 1 ] && FEATURES=()
 
@@ -33,14 +29,14 @@ echo "== Hop $VERSION ($BUILD), $BUNDLE_ID"
 
 # 1. A universal binary.
 rustup target list --installed | grep -q x86_64-apple-darwin || rustup target add x86_64-apple-darwin
-for t in aarch64-apple-darwin x86_64-apple-darwin; do
+for t in "${MAC_TARGETS[@]}"; do
   MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS" cargo_release "$t" -p hop ${FEATURES[@]+"${FEATURES[@]}"}
 done
 
 # 2. The bundle.
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 lipo -create -output "$APP/Contents/MacOS/$APP_NAME" \
-  "$ROOT/target/aarch64-apple-darwin/release/hop" "$ROOT/target/x86_64-apple-darwin/release/hop"
+  "${MAC_SLICES[@]}"
 "$ROOT/packaging/icon/make-icons.sh" >/dev/null
 cp "$ROOT/packaging/icon/out/AppIcon.icns" "$APP/Contents/Resources/"
 
@@ -94,7 +90,7 @@ if [ -n "$NOTARY_PROFILE" ]; then
 fi
 
 # 5. The disk image: the app and a link to /Applications.
-DMG="$DIST/$APP_NAME-$VERSION.dmg"
+DMG="$MAC_DMG"
 STAGE=$(mktemp -d)
 cp -R "$APP" "$STAGE/" && ln -s /Applications "$STAGE/Applications"
 rm -f "$DMG"

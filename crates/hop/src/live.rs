@@ -189,9 +189,9 @@ impl Live {
         });
     }
 
-    /// Secure Input (password fields) and display changes, which macOS does not push to us. Each
-    /// poll also reconciles the current session with Secure Input, so a change
-    /// that raced a session swap is corrected within 100 ms.
+    /// Secure Input (password fields), which macOS announces to nobody, and the display layout.
+    /// Each poll also reconciles the current session with Secure Input, so a change that raced a
+    /// session swap is corrected within 100 ms.
     fn watch_system(&'static self) {
         std::thread::spawn(move || {
             let mut displays_at = Instant::now();

@@ -45,13 +45,13 @@ mod tests {
     #[test]
     fn prefs_round_trip_and_bad_values_fall_back() {
         let dir = std::env::temp_dir().join(format!("hop-prefs-{}", std::process::id()));
-        assert_eq!(format!("{:?}", load(&dir)), format!("{:?}", ControllerConfig::default()), "nothing saved yet");
+        assert_eq!(load(&dir), ControllerConfig::default(), "nothing saved yet");
         let mut c = ControllerConfig { side: Side::Left, edges: true, speed: 1.5, ..ControllerConfig::default() };
         c.map.cmd_as_win = true;
         save(&dir, &c).unwrap();
-        assert_eq!(format!("{:?}", load(&dir)), format!("{c:?}"));
+        assert_eq!(load(&dir), c);
         std::fs::write(dir.join(FILE), "side = sideways\nspeed = -3\n").unwrap();
-        assert_eq!(format!("{:?}", load(&dir)), format!("{:?}", ControllerConfig::default()));
+        assert_eq!(load(&dir), ControllerConfig::default());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

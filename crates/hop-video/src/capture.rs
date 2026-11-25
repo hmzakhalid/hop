@@ -1,6 +1,7 @@
-//! Screen → H.264 on the GPU: DXGI Desktop Duplication captures a monitor, the D3D11 video
-//! processor converts BGRA to NV12, and a Media Foundation encoder (NVENC/AMF/QuickSync when
-//! present, Microsoft's software encoder otherwise) produces low-latency H.264 (Annex B).
+//! Screen → HEVC or H.264 on the GPU: DXGI Desktop Duplication captures a monitor, the D3D11
+//! video processor converts BGRA to NV12, and a Media Foundation encoder (hardware HEVC when
+//! asked and present, else hardware H.264 from NVENC/AMF/QuickSync, else Microsoft's software
+//! H.264) produces a low-latency Annex B stream.
 
 use std::mem::ManuallyDrop;
 use std::time::Instant;
@@ -407,9 +408,9 @@ pub struct Capturer {
     pub height: u32,
 }
 
-/// Move this thread onto whichever desktop has input. Duplication only works there.
-/// Move this thread to whichever desktop has input. A failure is not fatal (the current
-/// desktop can still be captured); it is reported if duplication then fails.
+/// Move this thread to whichever desktop has input: duplication only works there. A failure is
+/// not fatal (the current desktop can still be captured); it is reported if duplication then
+/// fails.
 fn switch_to_input_desktop() -> Option<String> {
     use windows::Win32::Foundation::GENERIC_ALL;
     use windows::Win32::System::StationsAndDesktops::{OpenInputDesktop, SetThreadDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS};
