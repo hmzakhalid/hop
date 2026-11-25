@@ -551,6 +551,98 @@ pub fn truncate_utf8(s: &str, max: usize) -> &str {
 mod tests {
     use super::*;
 
+    /// Every message as Hop 1.0.0 put it on the wire. Hop has no protocol version, so a PC and a
+    /// Mac a release apart must still understand each other: changing these bytes is a protocol
+    /// change, not a refactor.
+    fn pinned() -> Vec<(&'static str, Vec<u8>)> {
+        let state = State {
+            epoch: 7,
+            active: true,
+            send_time_us: 0x0102_0304_0506,
+            x: -1920,
+            y: 540,
+            scroll_v: -360,
+            scroll_h: 17,
+            buttons: 0b101,
+            pressed: vec![0x1D, 0x11D],
+            first_event: 42,
+            transitions: vec![Transition { kind: TransKind::KeyDown, code: 0x1E, x: 1, y: -2 }, Transition { kind: TransKind::ButtonUp, code: 0, x: 3, y: 4 }],
+        };
+        let ack = Ack {
+            epoch: 3,
+            applied_event: 99,
+            echo_time_us: 5,
+            hold_us: 12,
+            flags: ACK_ACTIVE,
+            cursor_x: -10,
+            cursor_y: 20,
+            monitors: vec![Monitor { left: -1920, top: 0, right: 2560, bottom: 1440, scale_milli: 1250 }],
+        };
+        let want = crate::video::Want { watch: true, keyframe: true, mac_time_us: 77, complete: 5, lost: 1, delay_us: 4321 };
+        let frag = crate::video::Frag {
+            frame: 9,
+            len: 3,
+            block: 0,
+            blocks: 1,
+            shard: 0,
+            data_shards: 1,
+            parity_shards: 1,
+            flags: 1,
+            captured_us: 1000,
+            pc_us: 250,
+            data: vec![0xAA, 0xBB, 0xCC],
+        };
+        let msgs = [
+            ("state", Msg::State(state)),
+            ("ack", Msg::Ack(ack)),
+            ("ping", Msg::Ping { t: 11 }),
+            ("pong", Msg::Pong { t: 12 }),
+            ("want", Msg::VideoWant(want)),
+            ("frag", Msg::VideoFrag(frag)),
+            ("clock", Msg::VideoClock { mac_time_us: 1, pc_time_us: 2, bitrate: 3 }),
+            ("cursor", Msg::VideoCursor { seq: 4, at: Some((-5, 6)) }),
+            ("cursor hidden", Msg::VideoCursor { seq: 5, at: None }),
+            ("note", Msg::VideoNote("no GPU".into())),
+        ];
+        let mut out: Vec<(&str, Vec<u8>)> = msgs
+            .into_iter()
+            .map(|(name, m)| {
+                let mut b = Vec::new();
+                m.encode(&mut b);
+                (name, b)
+            })
+            .collect();
+        out.push(("probe", encode_probe(0xDEAD_BEEF)));
+        out.push(("probe reply", encode_probe_reply(1, &[7; 32], "PC")));
+        out.push(("unknown session", encode_unknown_session(0x0102_0304).to_vec()));
+        out
+    }
+
+    #[test]
+    fn the_wire_format_is_the_one_hop_1_0_0_speaks() {
+        #[rustfmt::skip]
+        let expected: &[(&str, &str)] = &[
+        ("state", "010700000001060504030201000080f8ffff1c02000098feffffffffffff110000000000000005021d001d012a0000000000000002001e0001000000feffffff0400000300000004000000"),
+        ("ack", "0203000000630000000000000005000000000000000c00000001f6ffffff140000000180f8ffff00000000000a0000a0050000e204"),
+        ("ping", "030b00000000000000"),
+        ("pong", "040c00000000000000"),
+        ("want", "05034d000000000000000500000001000000e1100000"),
+        ("frag", "060900000003000000000100010101e803000000000000fa0000000300aabbcc"),
+        ("clock", "070100000000000000020000000000000003000000"),
+        ("cursor", "080400000001fbffffff06000000"),
+        ("cursor hidden", "0805000000000000000000000000"),
+        ("note", "0906006e6f20475055"),
+        ("probe", "01484f5031efbeadde"),
+        ("probe reply", "02484f5031010000000707070707070707070707070707070707070707070707070707070707070707025043"),
+        ("unknown session", "3104030201"),
+        ];
+        let got: Vec<(&str, String)> = pinned().into_iter().map(|(n, b)| (n, b.iter().map(|x| format!("{x:02x}")).collect())).collect();
+        assert_eq!(got.len(), expected.len());
+        for ((name, hex), (ename, ehex)) in got.iter().zip(expected) {
+            assert_eq!((*name, hex.as_str()), (*ename, *ehex), "the bytes of {name} changed");
+        }
+    }
+
     #[test]
     fn state_roundtrip() {
         let s = State {
