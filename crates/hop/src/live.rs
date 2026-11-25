@@ -150,7 +150,6 @@ impl Live {
         });
     }
 
-    /// Ctrl+C, `kill`, closing the terminal: give the cursor back, tell the PC, exit.
     /// On quit: show the Mac's cursor and tell the PC to release everything, without waiting
     /// on a session thread that may be stuck.
     fn give_back(&self) {
@@ -163,18 +162,18 @@ impl Live {
     /// Takes the cursor back at the lease deadline without the controller lock, so it works even
     /// if the session's threads are stuck.
     fn watchdog(&'static self) {
-        let deadline = move || self.session().map_or(0, |s| s.lease_deadline());
         std::thread::spawn(move || loop {
-            let (d, now) = (deadline(), now_us());
-            if d == 0 || now < d {
+            let Some(session) = self.session() else {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            let (d, now) = (session.lease_deadline(), now_us());
+            if !session.lease_expired(now) {
                 let wait = if d == 0 { 5_000 } else { (d - now).clamp(50, 5_000) };
                 std::thread::sleep(Duration::from_micros(wait));
                 continue;
             }
-            if self.cursor.revoke_if(|| {
-                let d = deadline();
-                d != 0 && now_us() >= d
-            }) {
+            if self.cursor.revoke_if(|| session.lease_expired(now_us())) {
                 hud::hide();
                 if self.verbose {
                     eprintln!("watchdog: no answer from the PC, the Mac has its input back");
@@ -268,8 +267,7 @@ extern "C" fn on_event(_proxy: *mut c_void, etype: u32, event: macos::CGEventRef
         }
         return event;
     }
-    let deadline = session.lease_deadline();
-    if deadline != 0 && now_us() >= deadline {
+    if session.lease_expired(now_us()) {
         return event; // the PC went quiet; the session is about to hand control back
     }
     let ev = Ev(event);

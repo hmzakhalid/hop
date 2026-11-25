@@ -11,7 +11,7 @@ use crate::link::{Event, Link, HANDSHAKE_RETRY};
 use crate::wire::Msg;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 /// The timer never sleeps longer than this, so link upkeep runs at least this often.
@@ -35,6 +35,8 @@ pub struct Session {
     link: Arc<Link>,
     effects: Arc<dyn Effects>,
     deadline: AtomicU64,
+    /// When the timer plans to run next (µs on [`now_us`]).
+    timer_at: AtomicU64,
     wake: (Mutex<bool>, Condvar),
 }
 
@@ -45,6 +47,7 @@ impl Session {
             link,
             effects,
             deadline: AtomicU64::new(0),
+            timer_at: AtomicU64::new(u64::MAX),
             wake: (Mutex::new(false), Condvar::new()),
         })
     }
@@ -52,28 +55,25 @@ impl Session {
     /// One controller step: send what it decided and carry out its effect. Returns whether the
     /// Mac event that caused it should be swallowed.
     pub fn act(&self, f: impl FnOnce(&mut Controller, u64) -> Output) -> bool {
-        let mut c = self.ctl.lock().unwrap();
-        let out = f(&mut c, now_us());
-        let swallow = self.finish(&c, out);
-        self.wake_timer_if_in_control(&c);
-        swallow
+        self.step(self.ctl.lock().unwrap(), f)
     }
 
     /// [`act`](Self::act), unless another thread holds the controller (never blocks).
     pub fn try_act(&self, f: impl FnOnce(&mut Controller, u64) -> Output) -> Option<bool> {
-        let mut c = self.ctl.try_lock().ok()?;
-        let out = f(&mut c, now_us());
-        let swallow = self.finish(&c, out);
-        self.wake_timer_if_in_control(&c);
-        Some(swallow)
+        Some(self.step(self.ctl.try_lock().ok()?, f))
     }
 
-    /// While the PC has control, an event may need a sooner timer (a retransmit).
-    fn wake_timer_if_in_control(&self, c: &Controller) {
-        if c.is_remote() {
+    fn step(&self, mut c: MutexGuard<'_, Controller>, f: impl FnOnce(&mut Controller, u64) -> Output) -> bool {
+        let now = now_us();
+        let out = f(&mut c, now);
+        let swallow = self.finish(&c, out);
+        // Wake the timer only if this made something due sooner than it planned (a retransmit,
+        // heartbeats after entering); an ack, say, never does.
+        if c.next_wake(now) < self.timer_at.load(Ordering::SeqCst) {
             *self.wake.0.lock().unwrap() = true;
             self.wake.1.notify_one();
         }
+        swallow
     }
 
     /// Whether something asked the timer to run again at once; clears the request.
@@ -112,6 +112,13 @@ impl Session {
         self.deadline.load(Ordering::SeqCst)
     }
 
+    /// The PC has control, but its lease ran out at `now`: the Mac must take its input back.
+    /// Lock-free, like [`lease_deadline`](Self::lease_deadline).
+    pub fn lease_expired(&self, now: u64) -> bool {
+        let d = self.lease_deadline();
+        d != 0 && now >= d
+    }
+
     /// Handle one packet from the PC, blocking up to the link's read timeout.
     pub fn receive(&self) -> io::Result<Event> {
         let event = self.link.recv()?;
@@ -138,7 +145,9 @@ impl Session {
             c.next_wake(now_us())
         };
         let link = self.link.maintain();
-        let wait = Duration::from_micros(next.saturating_sub(now_us())).clamp(Duration::from_micros(300), MAX_TIMER_SLEEP);
+        let now = now_us();
+        let wait = Duration::from_micros(next.saturating_sub(now)).clamp(Duration::from_micros(300), MAX_TIMER_SLEEP);
+        self.timer_at.store(now + wait.as_micros() as u64, Ordering::SeqCst);
         (wait, link)
     }
 
@@ -232,9 +241,12 @@ mod tests {
         let session = session(Arc::new(NoEffects));
         enter(&session);
         assert!(session.read(|c| c.is_remote()));
-        assert!(session.take_wake(), "an event while in control wakes the timer");
+        assert!(session.take_wake(), "entering makes heartbeats due: the timer wakes");
         let (wait, _) = session.tick();
         assert!(!session.take_wake(), "a tick must not wake the timer again, or it spins");
         assert!(wait >= Duration::from_millis(1), "nothing is due for a while: {wait:?}");
+        let monitors = vec![Monitor { left: 0, top: 0, right: 1920, bottom: 1080, scale_milli: 1000 }];
+        session.act(|c, now| c.ack(now, &Ack { epoch: 1, flags: crate::wire::ACK_ACTIVE, monitors, ..Ack::default() }));
+        assert!(!session.take_wake(), "an ack makes nothing due sooner: the timer sleeps on");
     }
 }

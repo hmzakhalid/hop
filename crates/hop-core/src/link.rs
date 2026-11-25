@@ -8,12 +8,12 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// An unanswered handshake is sent again after this long.
+/// An unanswered handshake is sent again after this long. Every user of a link calls
+/// [`Link::maintain`] more often than this (each checks it where it sets its cadence).
 pub(crate) const HANDSHAKE_RETRY: Duration = Duration::from_millis(400);
 /// Renegotiate after the PC has been silent this long. The PC only speaks when spoken to, so
-/// this must be longer than the Mac's slowest keepalive.
-const RECONNECT_AFTER: Duration = Duration::from_secs(3);
-const _: () = assert!((crate::controller::IDLE_KEEPALIVE_US as u128) < RECONNECT_AFTER.as_micros());
+/// every user of a link must speak more often than this (checked where each sets its cadence).
+pub(crate) const RECONNECT_AFTER: Duration = Duration::from_secs(3);
 /// How long [`Link::recv`] blocks, so its caller can check for shutdown and retry handshakes.
 const RECV_TIMEOUT: Duration = Duration::from_millis(50);
 const _: () = assert!(RECV_TIMEOUT.as_micros() < HANDSHAKE_RETRY.as_micros());
