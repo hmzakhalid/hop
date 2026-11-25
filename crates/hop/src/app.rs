@@ -66,7 +66,7 @@ struct Shared {
     saving: Mutex<()>,
     conn: Mutex<Conn>,
     live: OnceLock<&'static Live>,
-    signals: Mutex<Option<SignalsBlocked>>,
+    signals: SignalsBlocked,
 }
 
 impl Shared {
@@ -85,6 +85,18 @@ impl Shared {
     /// Write the newest settings. One writer at a time, each writing the newest settings, so the
     /// last write always holds the latest state. A failed write only loses the choice at the next
     /// launch.
+    fn new(prefs: ControllerConfig, dir: PathBuf, conn: Conn, signals: SignalsBlocked) -> Arc<Shared> {
+        Arc::new(Shared {
+            prefs: Mutex::new(prefs),
+            dir,
+            prefs_changed: AtomicU64::new(0),
+            saving: Mutex::new(()),
+            conn: Mutex::new(conn),
+            live: OnceLock::new(),
+            signals,
+        })
+    }
+
     fn save_prefs(&self) {
         let _g = self.saving.lock().unwrap();
         let latest = self.prefs.lock().unwrap().clone();
@@ -97,15 +109,9 @@ pub fn run() -> ! {
     hud::init();
     let mtm = MainThreadMarker::new().expect("the app runs on the main thread");
     let dir = pc::store().dir;
-    let shared = Arc::new(Shared {
-        prefs: Mutex::new(prefs::load(&dir)),
-        dir,
-        prefs_changed: AtomicU64::new(0),
-        saving: Mutex::new(()),
-        conn: Mutex::new(Conn::NeedsAccess),
-        live: OnceLock::new(),
-        signals: Mutex::new(Some(signals)),
-    });
+    let shared = Shared::new(prefs::load(&dir), dir, Conn::NeedsAccess, signals);
+    let s = shared.clone();
+    live::on_quit(move || s.save_prefs()); // a save still in flight must not be lost
     let menu = Menu::new(mtm, shared.clone());
     std::mem::forget(menu); // lives as long as the app
 
@@ -127,8 +133,10 @@ pub fn run() -> ! {
 
 /// Main thread, once Accessibility access is granted.
 fn start_live(shared: &Shared) {
-    let Some(signals) = shared.signals.lock().unwrap().take() else { return };
-    match Live::start(signals, false) {
+    if shared.live.get().is_some() {
+        return;
+    }
+    match Live::start(shared.signals, false) {
         Ok(live) => {
             let _ = shared.live.set(live);
             // First run: go straight to pairing instead of leaving people to find the menu.
@@ -314,11 +322,7 @@ define_class!(
 
         #[unsafe(method(quitHop:))]
         fn quit_hop(&self, _: Option<&AnyObject>) {
-            if let Some(live) = self.shared().live.get() {
-                live.detach(); // the PC releases everything; the Mac has its input
-            }
-            self.shared().save_prefs(); // a save still in flight must not be lost
-            std::process::exit(0);
+            live::quit()
         }
     }
 );
@@ -447,16 +451,9 @@ pub fn print_menus() {
         Conn::Looking("Desk PC".into()),
         Conn::Connected { name: "Desk PC".into(), addr: ([192, 168, 1, 20], 47820).into(), public: [0; 32] },
     ];
+    let signals = live::block_signals();
     for conn in states {
-        let shared = Arc::new(Shared {
-            dir: std::env::temp_dir(),
-            prefs: Mutex::new(ControllerConfig::default()),
-            prefs_changed: AtomicU64::new(0),
-            saving: Mutex::new(()),
-            conn: Mutex::new(conn),
-            live: OnceLock::new(),
-            signals: Mutex::new(None),
-        });
+        let shared = Shared::new(ControllerConfig::default(), std::env::temp_dir(), conn, signals);
         let m = Menu::new(mtm, shared);
         let menu = NSMenu::new(mtm);
         m.fill(&menu);

@@ -14,7 +14,7 @@ use hop_core::session::{Effects, Session};
 use std::ffi::c_void;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 const SIGNALS: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
@@ -31,13 +31,37 @@ fn signal_set() -> libc::sigset_t {
 }
 
 /// Proof that [`block_signals`] ran, which [`Live::start`] requires.
+#[derive(Clone, Copy)]
 pub struct SignalsBlocked(());
 
-/// Block Ctrl+C, `kill` and hang-up in this thread and every thread it starts, so only
-/// [`Live`]'s waiter receives them and can give the cursor back first. Call before starting any
-/// thread: threads inherit the mask they start with.
+type QuitHook = Box<dyn Fn() + Send>;
+static QUIT_HOOKS: Mutex<Vec<QuitHook>> = Mutex::new(Vec::new());
+
+/// Run `f` when the process quits, by signal or by [`quit`], after the hooks added before it.
+pub fn on_quit(f: impl Fn() + Send + 'static) {
+    QUIT_HOOKS.lock().unwrap().push(Box::new(f));
+}
+
+/// Quit: run the quit hooks (give the Mac its input back, save settings), then exit.
+pub fn quit() -> ! {
+    let hooks = std::mem::take(&mut *QUIT_HOOKS.lock().unwrap());
+    for hook in hooks {
+        hook();
+    }
+    std::process::exit(0)
+}
+
+/// Block Ctrl+C, `kill` and hang-up in this thread and every thread it starts, and from now on
+/// answer them on one waiter thread with [`quit`], so the cursor is always given back first.
+/// Call before starting any other thread: threads inherit the mask they start with.
 pub fn block_signals() -> SignalsBlocked {
     unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &signal_set(), std::ptr::null_mut()) };
+    std::thread::spawn(|| {
+        let mut sig = 0;
+        unsafe { libc::sigwait(&signal_set(), &mut sig) };
+        println!();
+        quit()
+    });
     SignalsBlocked(())
 }
 
@@ -58,8 +82,8 @@ pub struct Live {
 }
 
 impl Live {
-    /// Install the event tap on this (the main) thread's run loop and start the watchdog, the
-    /// signal waiter and the system watcher. Fails without Accessibility access.
+    /// Install the event tap on this (the main) thread's run loop and start the watchdog and the
+    /// system watcher. Quitting gives the Mac its input back. Fails without Accessibility access.
     pub fn start(_: SignalsBlocked, verbose: bool) -> Result<&'static Live, String> {
         let live: &'static Live = Box::leak(Box::new(Live {
             current: RwLock::new(None),
@@ -73,7 +97,7 @@ impl Live {
         live.port.store(port, Ordering::SeqCst);
         macos::attach_tap(port);
         macos::allow_background_cursor_hiding();
-        live.wait_for_signals();
+        on_quit(move || live.give_back());
         live.watchdog();
         live.watch_system();
         Ok(live)
@@ -127,17 +151,13 @@ impl Live {
     }
 
     /// Ctrl+C, `kill`, closing the terminal: give the cursor back, tell the PC, exit.
-    fn wait_for_signals(&'static self) {
-        std::thread::spawn(move || {
-            let mut sig = 0;
-            unsafe { libc::sigwait(&signal_set(), &mut sig) };
-            self.cursor.release(None);
-            if let Some(s) = self.session() {
-                s.try_act(|c, now| c.hand_back(now, LeaveReason::Quit));
-            }
-            println!();
-            std::process::exit(0);
-        });
+    /// On quit: show the Mac's cursor and tell the PC to release everything, without waiting
+    /// on a session thread that may be stuck.
+    fn give_back(&self) {
+        self.cursor.release(None);
+        if let Some(s) = self.session() {
+            s.try_act(|c, now| c.hand_back(now, LeaveReason::Quit));
+        }
     }
 
     /// Takes the cursor back at the lease deadline without the controller lock, so it works even
