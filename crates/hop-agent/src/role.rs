@@ -266,7 +266,7 @@ pub fn run_video(role: Role, port: u16, file: Option<PathBuf>) -> Result<(), Str
     use hop_core::stream::{self, FileSource, Source};
     let store = role.store();
     let keys = store.keys().map_err(|e| format!("cannot read the key in {}: {e}", store.dir.display()))?;
-    let video_port = port.checked_add(hop_core::video::PORT_OFFSET).ok_or("the port is too high")?;
+    let video_port = hop_core::video::port_for(port).ok_or("the port is too high")?;
     let sock = std::net::UdpSocket::bind(std::net::SocketAddr::from(([0, 0, 0, 0], video_port))).map_err(|e| format!("video port {video_port}: {e}"))?;
     let stop = Arc::new(AtomicBool::new(false));
     if role == Role::Console {

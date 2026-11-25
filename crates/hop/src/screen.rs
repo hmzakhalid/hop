@@ -1,8 +1,8 @@
 //! The live screen view: the PC's screen in a Mac window, over the video channel.
 //!
 //! Threads:
-//! - the receiver puts frames back together and hands them to the hardware decoder;
-//! - the requester keeps asking the PC for frames until the window closes;
+//! - the receiver puts frames back together and hands them to the hardware decoder (its
+//!   [`Client`] keeps asking the PC for frames until the window closes);
 //! - with control, the cursor follower draws the PC cursor from the Mac's own position, so the
 //!   cursor never waits for the network or the encoder.
 //!
@@ -97,9 +97,10 @@ impl Viewer {
 
 fn run(viewer: Viewer, target: Target, mut decoder: view::Decoder, live: Option<&'static Live>) {
     let name = target.name.clone();
-    let video_addr = SocketAddr::new(target.addr.ip(), target.addr.port().wrapping_add(video::PORT_OFFSET));
-    let client = match pc::store().keys().map_err(|e| e.to_string()).and_then(|keys| {
-        Client::connect(keys, target.public, video_addr, Duration::from_secs(3)).map_err(|e| e.to_string())
+    let video_addr = video::port_for(target.addr.port()).map(|p| SocketAddr::new(target.addr.ip(), p)).ok_or("the PC's port is too high");
+    let client = match video_addr.map_err(String::from).and_then(|addr| {
+        let keys = pc::store().keys().map_err(|e| e.to_string())?;
+        Client::connect(keys, target.public, addr, Duration::from_secs(3)).map_err(|e| e.to_string())
     }) {
         Ok(c) => c,
         Err(e) => {
@@ -109,7 +110,6 @@ fn run(viewer: Viewer, target: Target, mut decoder: view::Decoder, live: Option<
         }
     };
     let local_cursor = Arc::new(AtomicBool::new(false));
-    request_frames(client.clone(), viewer.clone());
     if let Some(live) = live {
         follow_cursor(live, viewer.clone(), local_cursor.clone());
     }
@@ -119,8 +119,9 @@ fn run(viewer: Viewer, target: Target, mut decoder: view::Decoder, live: Option<
     while viewer.open() {
         let received = match client.recv() {
             Ok(r) => r,
-            Err(_) => {
-                std::thread::sleep(Duration::from_millis(50));
+            Err(e) => {
+                note = Some(format!("cannot reach the PC: {e}"));
+                std::thread::sleep(Duration::from_millis(50)); // the error came at once
                 None
             }
         };
@@ -166,7 +167,7 @@ fn run(viewer: Viewer, target: Target, mut decoder: view::Decoder, live: Option<
             stats = Stats::new();
         }
     }
-    let _ = client.want(false); // the PC stops capturing
+    client.stop();
 }
 
 /// Draw the PC pointer the PC reported, unless the Mac is driving it (then the Mac's own
@@ -222,16 +223,6 @@ impl Stats {
             self.push_us as f64 / n / 1000.0,
         )
     }
-}
-
-/// Ask for frames until the window closes.
-fn request_frames(client: Arc<Client>, viewer: Viewer) {
-    std::thread::spawn(move || {
-        while viewer.open() {
-            let _ = client.want(true);
-            std::thread::sleep(Duration::from_micros(video::WANT_EVERY_US));
-        }
-    });
 }
 
 /// While the Mac drives the PC, draw the PC cursor where the Mac is putting it.

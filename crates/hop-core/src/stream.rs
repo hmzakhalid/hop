@@ -222,15 +222,21 @@ pub enum Received {
     Note(String),
 }
 
-/// The Mac's end: asks the PC to stream and puts frames back together.
+/// The Mac's end: asks the PC to stream and puts frames back together. From [`connect`] until
+/// [`stop`] (or drop) it asks for frames on its own schedule, as long as someone calls [`recv`].
+///
+/// [`connect`]: Client::connect
+/// [`stop`]: Client::stop
+/// [`recv`]: Client::recv
 pub struct Client {
     link: Link,
     frames: Mutex<Reassembler>,
     clock: Mutex<ClockOffset>,
+    /// When the last request went out (µs on [`now_us`]).
+    asked_at: AtomicU64,
     /// A keyframe request went out since the last loss was noticed.
-    asked: AtomicBool,
-    /// The viewer is open: only then does a loss trigger a request of its own.
-    watching: AtomicBool,
+    asked_for_key: AtomicBool,
+    stopped: AtomicBool,
     /// Smoothed first-packet delay (µs), reported to the PC's rate control.
     delay: AtomicU64,
     /// A frame updated `delay` since the last report; otherwise the report says "unknown".
@@ -244,45 +250,61 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connect to the PC's video channel at `addr`.
+    /// Connect to the PC's video channel at `addr`, and ask it to start streaming.
     pub fn connect(keys: StaticKeys, pc_public: [u8; 32], addr: SocketAddr, timeout: Duration) -> io::Result<Arc<Client>> {
         let link = Link::new(UdpSocket::bind("0.0.0.0:0")?, keys, pc_public, addr)?;
         link.connect(timeout)?;
-        Ok(Arc::new(Client {
+        let client = Arc::new(Client {
             link,
             frames: Mutex::new(Reassembler::default()),
             clock: Mutex::new(ClockOffset::default()),
-            asked: AtomicBool::new(false),
-            watching: AtomicBool::new(false),
+            asked_at: AtomicU64::new(0),
+            asked_for_key: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
             delay: AtomicU64::new(0),
             fresh: AtomicBool::new(false),
             bitrate: AtomicU64::new(0),
             first_packet: Mutex::new((0, 0)),
             cursor_seq: Mutex::new(None),
-        }))
+        });
+        client.ask()?;
+        Ok(client)
     }
 
-    /// Keep the stream coming (or stop it). Call every [`video::WANT_EVERY_US`] while watching.
-    pub fn want(&self, watch: bool) -> io::Result<()> {
-        self.watching.store(watch, Ordering::Relaxed);
+    /// Tell the PC to stream (or, once stopped, to stop), and how it is going.
+    fn ask(&self) -> io::Result<()> {
+        let watch = !self.stopped.load(Ordering::Relaxed);
+        self.asked_at.store(now_us(), Ordering::Relaxed);
         self.link.maintain()?;
         let (keyframe, complete, lost) = {
             let r = self.frames.lock().unwrap();
             (r.wants_keyframe(), r.complete, r.lost)
         };
-        self.asked.store(keyframe, Ordering::Relaxed);
+        self.asked_for_key.store(keyframe, Ordering::Relaxed);
         let delay_us = if self.fresh.swap(false, Ordering::Relaxed) { self.delay.load(Ordering::Relaxed).min(u32::MAX as u64) as u32 } else { 0 };
         self.link.send(&Msg::VideoWant(Want { watch, keyframe, mac_time_us: now_us(), complete, lost, delay_us }))
+    }
+
+    /// Stop watching: the PC stops streaming at once (rather than after its timeout).
+    pub fn stop(&self) {
+        if !self.stopped.swap(true, Ordering::Relaxed) {
+            let _ = self.ask(); // if it is lost, the PC stops after its timeout anyway
+        }
     }
 
     /// The decoder could not use what it was given: start again from a keyframe.
     pub fn decoder_failed(&self) {
         self.frames.lock().unwrap().need_keyframe();
-        let _ = self.want(true);
+        let _ = self.ask(); // a failure shows at the next scheduled request
     }
 
     /// Wait (up to the link's short timeout) for the next complete frame, cursor move or note.
+    /// Sends the regular request when it is due; an error means the PC could not be reached.
     pub fn recv(&self) -> io::Result<Option<Received>> {
+        let watching = !self.stopped.load(Ordering::Relaxed);
+        if watching && now_us().saturating_sub(self.asked_at.load(Ordering::Relaxed)) >= video::WANT_EVERY_US {
+            self.ask()?;
+        }
         match self.link.recv()? {
             Event::Msg(Msg::VideoFrag(f)) => {
                 let arrived = now_us();
@@ -306,8 +328,8 @@ impl Client {
                     self.fresh.store(true, Ordering::Relaxed);
                 }
                 // Ask at once on loss, rather than at the next regular request.
-                if needs_key && !self.asked.load(Ordering::Relaxed) && self.watching.load(Ordering::Relaxed) {
-                    let _ = self.want(true);
+                if needs_key && watching && !self.asked_for_key.load(Ordering::Relaxed) {
+                    let _ = self.ask(); // a failure shows at the next scheduled request
                 }
                 Ok(frame.map(Received::Frame))
             }
@@ -328,8 +350,8 @@ impl Client {
                 self.clock.lock().unwrap().restart();
                 *self.cursor_seq.lock().unwrap() = None;
                 *self.first_packet.lock().unwrap() = (0, 0);
-                if self.watching.load(Ordering::Relaxed) {
-                    let _ = self.want(true);
+                if watching {
+                    self.ask()?;
                 }
                 Ok(None)
             }
@@ -367,6 +389,12 @@ impl Client {
     pub fn counts(&self) -> (u32, u32, u32) {
         let r = self.frames.lock().unwrap();
         (r.complete, r.lost, r.repaired)
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 

@@ -129,14 +129,6 @@ fn watch(client: &Arc<Client>, for_how_long: Duration) -> Vec<Frame> {
 
 /// Watch for `for_how_long`, returning the frames shown and the cursor moves seen.
 fn watch_all(client: &Arc<Client>, for_how_long: Duration) -> (Vec<Frame>, Vec<(i32, i32)>) {
-    let done = Arc::new(AtomicBool::new(false));
-    let (c, d) = (client.clone(), done.clone());
-    let asker = thread::spawn(move || {
-        while !d.load(Ordering::Relaxed) {
-            let _ = c.want(true);
-            thread::sleep(Duration::from_millis(100));
-        }
-    });
     let t = Instant::now();
     let (mut frames, mut cursors) = (Vec::new(), Vec::new());
     while t.elapsed() < for_how_long {
@@ -146,8 +138,6 @@ fn watch_all(client: &Arc<Client>, for_how_long: Duration) -> (Vec<Frame>, Vec<(
             _ => {}
         }
     }
-    done.store(true, Ordering::Relaxed);
-    asker.join().unwrap();
     (frames, cursors)
 }
 
@@ -205,12 +195,7 @@ fn frames_arrive_intact_and_in_order() {
     // Age of fresh frames: sent and received in the same process, so it should be tiny.
     let t = Instant::now();
     let (mut ages, mut true_ages) = (Vec::new(), Vec::new());
-    let mut asked = Instant::now() - Duration::from_secs(1);
     while t.elapsed() < Duration::from_millis(500) {
-        if asked.elapsed() >= Duration::from_millis(100) {
-            let _ = client.want(true);
-            asked = Instant::now();
-        }
         if let Some(Received::Frame(f)) = client.recv().unwrap() {
             ages.extend(client.age_us(&f));
             true_ages.push(now_us() - f.encoded.captured_us); // one process, one clock
@@ -249,7 +234,7 @@ fn loss_recovers_through_keyframes_and_never_shows_a_broken_frame() {
 fn closing_the_viewer_stops_the_stream() {
     let (pc, client, _) = setup(0);
     assert!(!watch(&client, Duration::from_millis(400)).is_empty());
-    client.want(false).unwrap();
+    client.stop();
     // Drain what was already in flight.
     let t = Instant::now();
     while t.elapsed() < Duration::from_millis(200) {

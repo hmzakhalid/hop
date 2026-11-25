@@ -1,6 +1,6 @@
 //! Screen view: how encoded frames cross the network. Pure logic: no capture, no decoding.
 //!
-//! Video has its own encrypted UDP channel, on the input port plus [`PORT_OFFSET`], so input
+//! Video has its own encrypted UDP channel, on the port after input's ([`port_for`]), so input
 //! never waits behind video on either machine. While a viewer is open, the Mac sends a
 //! [`Want`] every [`WANT_EVERY_US`]; the PC streams while those keep coming and stops capturing
 //! when they stop.
@@ -14,7 +14,12 @@ use crate::wire::{Frag, FRAG_HEVC, FRAG_KEYFRAME};
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
 /// The video channel's UDP port is the input port plus this.
-pub const PORT_OFFSET: u16 = 1;
+const PORT_OFFSET: u16 = 1;
+
+/// The video channel's port for the input channel's `port`; `None` for the very last port.
+pub fn port_for(port: u16) -> Option<u16> {
+    port.checked_add(PORT_OFFSET)
+}
 /// Frame bytes per fragment. With its header and encryption a fragment is about 1.25 KB, under
 /// any common path MTU.
 pub const FRAG_DATA: usize = 1200;
