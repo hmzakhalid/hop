@@ -783,7 +783,7 @@ footer { padding: 56px 0 calc(48px + env(safe-area-inset-bottom)); border-top: 1
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v2"/></svg></div>
         <h3>Locked to your two computers</h3>
         <p>Your Mac and PC pair once with a one-time code and remember each other's keys. Nothing else can connect.</p>
-        <div class="tags"><span>Noise IK handshake</span><span>ChaCha20-Poly1305</span><span>Local network only</span><span>Password fields stay on the Mac</span><span>No telemetry</span></div>
+        <div class="tags"><span>Noise IK handshake</span><span>ChaCha20-Poly1305</span><span>Direct, no relay</span><span>Password fields stay on the Mac</span><span>No telemetry</span></div>
       </div>
     </div>
   </div>
@@ -798,7 +798,7 @@ footer { padding: 56px 0 calc(48px + env(safe-area-inset-bottom)); border-top: 1
     <div class="faq reveal">
       <details open><summary>Is Hop really free?</summary><div class="a"><p>Yes. No trial, no ads, no account, no "pro" version. Hop is open source under the GPL-3.0, and the code is on <a href="https://github.com/hmzakhalid/hop">GitHub</a>.</p></div></details>
       <details><summary>Why does my Mac or PC warn me when I open it?</summary><div class="a"><p>Apple and Microsoft charge developers to sign apps, and Hop isn't signed yet. So the first time, macOS asks you to click <b>Open Anyway</b> (System Settings → Privacy &amp; Security), and Windows asks you to click <b>More info → Run anyway</b>.</p><p>Some antivirus apps are wary of any unsigned app that reads the keyboard. If yours removes Hop, restore it and allow it. Every release lists SHA-256 checksums, so you can check your download is the real one.</p></div></details>
-      <details><summary>Do both computers need to be on the same Wi-Fi?</summary><div class="a"><p>They need to be on the same home network: Wi-Fi, a cable, or one of each. Hop doesn't work over the internet, on purpose: your keystrokes never leave your home. For the lowest delay, plug the PC in with a cable.</p></div></details>
+      <details><summary>Do both computers need to be on the same Wi-Fi?</summary><div class="a"><p>They should be on the same home network: Wi-Fi, a cable, or one of each. That's how Hop finds your PC by itself. Your Mac then talks to the PC directly, with no relay or cloud server in between, so your keystrokes go straight from one to the other, encrypted. For the lowest delay, plug the PC in with a cable.</p></div></details>
       <details><summary>Which computers does it work with?</summary><div class="a"><p>Any Mac with macOS 14 (Sonoma) or later, Apple silicon or Intel, and any PC with Windows 10 or 11. Hop goes one way: the Mac's keyboard and trackpad control the PC.</p></div></details>
       <details><summary>Does it work in games?</summary><div class="a"><p>Yes, for most games. Hop holds every trackpad tap long enough for games to register it, and moves the pointer smoothly. A few games with strict anti-cheat ignore input from apps like Hop; for those, use a mouse plugged into the PC.</p></div></details>
       <details><summary>What if the PC freezes? Am I stuck?</summary><div class="a"><p>Never. If the PC stops answering for half a second, the Mac takes its keyboard and pointer back by itself. A separate watchdog does the same even if part of Hop hangs, and the PC lets go of every key the moment the Mac goes quiet.</p></div></details>
@@ -986,10 +986,12 @@ footer { padding: 56px 0 calc(48px + env(safe-area-inset-bottom)); border-top: 1
     c.setAttribute("cx", p.x + 1); c.setAttribute("cy", p.y + 1);
     c.animate([{ r: 3, opacity: 0.9 }, { r: 18, opacity: 0 }], { duration: 500, easing: "ease-out" });
   }
+  let captionSeq = 0;
   function caption(n, html) {
+    const seq = ++captionSeq;
     el.capN.textContent = n;
     el.capText.style.opacity = 0;
-    setTimeout(() => { el.capText.innerHTML = html; el.capText.style.opacity = 1; }, 160);
+    setTimeout(() => { if (seq === captionSeq) { el.capText.innerHTML = html; el.capText.style.opacity = 1; } }, 160);
   }
   function setArrow(dir) { el.capArrow.textContent = dir === "pc" ? "→" : "←"; }
   async function pressCombo(dir, id) {
@@ -1103,7 +1105,7 @@ footer { padding: 56px 0 calc(48px + env(safe-area-inset-bottom)); border-top: 1
   }
   new IntersectionObserver(([e]) => {
     visible = e.isIntersecting;
-    if (trying) return;
+    if (trying) { if (!visible) { endTry(); playing = !reduced; syncPlay(); } else return; }
     if (visible && playing) start(); else stop();
   }, { threshold: 0.25 }).observe(stage);
   btnPlay.addEventListener("click", () => {
@@ -1123,7 +1125,10 @@ footer { padding: 56px 0 calc(48px + env(safe-area-inset-bottom)); border-top: 1
     caption("✦", 'Move your mouse here, then press <span class="k">⌃</span><span class="k">⌥</span><span class="k">⌘</span><span class="k">→</span> or tap →.');
   }
   function endTry() {
-    trying = false;
+    trying = false; hopping = false;
+    run++; // cancels a switch still animating
+    resetScene();
+    caption(1, 'Press <b>Play</b> to watch, or <b>Try it yourself</b>.');
     stage.classList.remove("trying"); btnTry.classList.remove("on"); btnTry.textContent = "Try it yourself";
     live.classList.remove("try"); live.lastElementChild.textContent = "Live demo";
   }

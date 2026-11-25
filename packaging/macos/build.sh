@@ -12,7 +12,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 source "$HERE/config.sh"
-source "$ROOT/packaging/trim-paths.sh"
+source "$ROOT/packaging/cargo-release.sh"
 
 DEV=0
 for a in "$@"; do
@@ -34,7 +34,7 @@ echo "== Hop $VERSION ($BUILD), $BUNDLE_ID"
 # 1. A universal binary.
 rustup target list --installed | grep -q x86_64-apple-darwin || rustup target add x86_64-apple-darwin
 for t in aarch64-apple-darwin x86_64-apple-darwin; do
-  (cd "$ROOT" && MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS" cargo build -q --release -p hop ${FEATURES[@]+"${FEATURES[@]}"} --target "$t" --config "$(trim_paths "$t")")
+  MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS" cargo_release "$t" -p hop ${FEATURES[@]+"${FEATURES[@]}"}
 done
 
 # 2. The bundle.

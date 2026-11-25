@@ -11,7 +11,7 @@ Hop is free software under the GPL-3.0. Releases are on [GitHub Releases](https:
    packaging/release.sh
    ```
    - **Builds:** both apps, from the committed tree, so the build id names a public commit.
-   - **Paths:** keeps this machine's paths out of the binaries ([packaging/trim-paths.sh](../packaging/trim-paths.sh)).
+   - **Paths:** keeps this machine's paths out of the binaries ([packaging/cargo-release.sh](../packaging/cargo-release.sh)).
    - **Leak check:** refuses to continue if a binary still contains your home folder, user name, computer name or git email.
    - **Output:** `Hop.dmg`, `Hop-Setup.exe` and `SHA256SUMS.txt`, in `dist/release/`.
 4. **Try them** on a Mac and a PC.

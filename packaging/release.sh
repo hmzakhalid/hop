@@ -25,7 +25,12 @@ if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
   echo "Commit your changes first: the build id must name a public commit." >&2
   exit 1
 fi
-# A stable signature, so an update keeps the Mac's Accessibility permission.
+# A stable, certificate-backed signature, so an update keeps the Mac's Accessibility permission.
+# ("-" is codesign's spelling of ad hoc.)
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  echo "HOP_SIGN_IDENTITY=- is an ad-hoc signature; releases need a certificate." >&2
+  exit 1
+fi
 if [ -z "$SIGN_IDENTITY" ] && ! security find-identity -p codesigning 2>/dev/null | grep -q "\"$LOCAL_SIGN_NAME\""; then
   echo "No signing identity. Set HOP_SIGN_IDENTITY, or run packaging/macos/make-local-identity.sh" >&2
   echo "(or import the backed-up \"$LOCAL_SIGN_NAME\" key) so updates keep their permissions." >&2
@@ -48,15 +53,19 @@ BINARIES=(
 PRIVATE=("$HOME" "/Users/$(id -un)" "$(scutil --get ComputerName 2>/dev/null || true)" "$(scutil --get LocalHostName 2>/dev/null || true)"
          "$(git config --global user.email 2>/dev/null || true)" "$(git -C "$ROOT" config user.email 2>/dev/null || true)")
 for b in "${BINARIES[@]}"; do
+  # Read the whole text first: piping strings into grep -q fails open under pipefail.
+  text=$(strings -a "$b") && [ -n "$text" ] || { echo "Could not read $b. Not releasing." >&2; exit 1; }
   for p in "${PRIVATE[@]}"; do
     [ -n "$p" ] || continue
-    if strings -a "$b" | grep -qiF -- "$p"; then
+    if grep -qiF -- "$p" <<<"$text"; then
       echo "$b contains \"$p\". Not releasing." >&2
       exit 1
     fi
   done
 done
 echo "== no private paths or names in the binaries"
+signature=$(codesign -dv "$ROOT/dist/$APP_NAME.app" 2>&1) || { echo "Could not read Hop.app's signature." >&2; exit 1; }
+grep -q '^Authority=' <<<"$signature" || { echo "Hop.app is not certificate-signed. Not releasing." >&2; exit 1; }
 
 OUT="$ROOT/dist/release"
 rm -rf "$OUT" && mkdir -p "$OUT"

@@ -17,7 +17,7 @@ The first public release. Hop is free and open source under the GPL-3.0.
   - Password fields never cross over.
 - **Private:**
   - Paired with a one-time code, end-to-end encrypted (Noise IK, ChaCha20-Poly1305).
-  - Local network only: no account, no cloud, no tracking.
+  - A direct connection between your two computers: no account, no cloud server, no tracking.
 - **Easy setup:** the Mac app finds the PC and asks for its code the first time it opens.
 
 Known limits:

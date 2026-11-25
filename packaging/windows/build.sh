@@ -11,14 +11,14 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-source "$ROOT/packaging/trim-paths.sh"
+source "$ROOT/packaging/cargo-release.sh"
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)
 TARGET=x86_64-pc-windows-gnu
 DIST="$ROOT/dist"
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
-(cd "$ROOT" && cargo build -q --release --target "$TARGET" -p hop-agent --config "$(trim_paths "$TARGET")")
+cargo_release "$TARGET" -p hop-agent
 for exe in hop-agent.exe hop-tray.exe; do
   cp "$ROOT/target/$TARGET/release/$exe" "$STAGE/"
   [ -n "${HOP_WIN_SIGN:-}" ] && $HOP_WIN_SIGN "$STAGE/$exe"

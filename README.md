@@ -1,10 +1,24 @@
-# Hop
+<p align="center">
+  <a href="https://gethop.vercel.app"><img src="site/apple-touch-icon.png" width="112" height="112" alt="Hop"></a>
+</p>
 
-**Use your Mac's keyboard and trackpad on your Windows PC.** Press ⌃⌥⌘→ and you're on the PC; ⌃⌥⌘← brings you back. Hop also shows the PC's screen in a window on your Mac.
+<h1 align="center">Hop</h1>
 
-Free and open source (GPL-3.0). No account, no cloud: just your two computers on your home network.
+<p align="center">
+  <b>Use your Mac's keyboard and trackpad on your Windows PC.</b><br>
+  Press ⌃⌥⌘→ and you're on the PC; ⌃⌥⌘← brings you back. Hop also shows the PC's screen in a window on your Mac.
+</p>
 
-**[Download for Mac](https://github.com/hmzakhalid/hop/releases/latest/download/Hop.dmg)** · **[Download for Windows](https://github.com/hmzakhalid/hop/releases/latest/download/Hop-Setup.exe)** · [Website](https://gethop.vercel.app) · [User guide](docs/USER_GUIDE.md)
+<p align="center">
+  Free and open source (GPL-3.0). No account, no cloud: just your two computers on your home network.
+</p>
+
+<p align="center">
+  <a href="https://github.com/hmzakhalid/hop/releases/latest/download/Hop.dmg"><b>Download for Mac</b></a> ·
+  <a href="https://github.com/hmzakhalid/hop/releases/latest/download/Hop-Setup.exe"><b>Download for Windows</b></a> ·
+  <a href="https://gethop.vercel.app">Website</a> ·
+  <a href="docs/USER_GUIDE.md">User guide</a>
+</p>
 
 ## What it does
 
@@ -23,7 +37,7 @@ Free and open source (GPL-3.0). No account, no cloud: just your two computers on
   - Password fields on the Mac never cross over.
 - **Private:**
   - Paired with a one-time code, and end-to-end encrypted (Noise IK, ChaCha20-Poly1305).
-  - Nothing leaves your network.
+  - Your Mac talks to your PC directly: nothing goes through a server.
 
 ## Set up (about 2 minutes)
 
