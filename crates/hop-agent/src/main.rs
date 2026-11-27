@@ -2,6 +2,7 @@
 //!
 //! Off Windows it builds with a dry-run injector that prints what it would do.
 
+mod asker;
 mod backoff;
 mod cli;
 mod dryrun;

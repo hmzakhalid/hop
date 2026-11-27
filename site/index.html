@@ -74,7 +74,7 @@ kbd { font-family: var(--sans); }
 /* Reveal on scroll */
 .reveal { opacity: 0; transform: translateY(24px); transition: opacity .8s cubic-bezier(.2,.7,.2,1), transform .8s cubic-bezier(.2,.7,.2,1); }
 .reveal.in { opacity: 1; transform: none; }
-@media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; transition: none; } html { scroll-behavior: auto; } }
+@media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; transition: none; } html { scroll-behavior: auto; } .check-num { animation: none; } }
 
 /* Buttons */
 .btn {
@@ -248,15 +248,17 @@ kbd { font-family: var(--sans); }
 .pc-code .t { height: 30px; display: flex; align-items: center; justify-content: space-between; padding: 0 0 0 12px; font-size: 12px; background: #f0f0f0; }
 .pc-code .t span:last-child { display: flex; } .pc-code .t span:last-child i { width: 34px; text-align: center; font-style: normal; color: #444; font-size: 11px; line-height: 30px; }
 .pc-code .b { padding: 16px 14px 18px; }
-.pc-code .code { font: 600 clamp(15px, 2.1vw, 19px)/1.2 var(--mono); letter-spacing: .04em; margin: 8px 0; color: #0b57d0; white-space: nowrap; }
 .pc-code small { color: #555; font-size: 11.5px; display: block; }
+.pc-code p { font-size: 12px; line-height: 1.45; margin: 0; color: #222; }
+.pc-code .bar { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px 12px; background: #f0f0f0; }
+.pc-btn { padding: 4px 0; width: 64px; text-align: center; font-size: 12px; border: 1px solid #c4c4c4; background: #fdfdfd; border-radius: 3px; color: #111; }
+.pc-btn.default { border-color: #0067c0; box-shadow: inset 0 0 0 1px #0067c0; }
+.check-num { display: block; font: 600 clamp(17px, 2.3vw, 21px)/1.2 var(--mono); letter-spacing: .06em; margin: 8px 0 2px; color: #0b57d0; white-space: nowrap; animation: match 2.4s ease-in-out infinite; }
+@keyframes match { 0%, 55%, 100% { text-shadow: none; } 70% { text-shadow: 0 0 10px rgba(11,87,208,.45); } }
 .alert { padding: 18px 16px 16px; text-align: center; }
 .alert img { width: 44px; height: 44px; margin: 0 auto 8px; }
 .alert h5 { margin: 0; font-size: 13.5px; }
 .alert p { font-size: 11.5px; opacity: .75; margin-top: 6px; }
-.alert .field { margin-top: 10px; text-align: left; border-radius: 6px; padding: 6px 9px; font: 500 12.5px/1.3 var(--mono); background: #fff; border: 1px solid rgba(0,0,0,.15); min-height: 29px; color: #111; }
-.alert .select { margin-top: 10px; text-align: left; border-radius: 6px; padding: 5px 9px; font-size: 12px; background: #fff; border: 1px solid rgba(0,0,0,.15); display: flex; justify-content: space-between; color: #111; }
-.alert .field .caret { display: inline-block; width: 1px; height: 14px; background: #0a6cf5; vertical-align: -2px; animation: blink 1s steps(1) infinite; }
 .alert .btns { display: flex; gap: 8px; margin-top: 12px; }
 .alert .btns .mac-btn { flex: 1; padding: 6px 0; }
 @media (max-width: 560px) { .pair-wrap { grid-template-columns: 1fr; } }
@@ -548,7 +550,7 @@ footer { padding: 56px 0 calc(48px + env(safe-area-inset-bottom)); border-top: 1
     <div class="section-head reveal">
       <span class="eyebrow">Set up in two minutes</span>
       <h2>Five steps. No settings to figure out.</h2>
-      <p>Install Hop on both computers, type one code, and you're done. You do this once; after that, Hop connects by itself whenever both are on.</p>
+      <p>Install Hop on both computers, click <b>Connect</b> on the Mac and <b>Yes</b> on the PC, and you're done. You do this once; after that, Hop connects by itself whenever both are on.</p>
     </div>
     <div class="steps">
 
@@ -559,8 +561,7 @@ footer { padding: 56px 0 calc(48px + env(safe-area-inset-bottom)); border-top: 1
           <p>Download the installer on the PC and open it.</p>
           <ol>
             <li>If Windows shows a blue box saying "Windows protected your PC", click <b>More info</b>, then <b>Run anyway</b>.</li>
-            <li>Click through the installer. At the end, leave <b>Pair a Mac now</b> ticked.</li>
-            <li>A small window shows a code. Leave it open for step 4.</li>
+            <li>Click through the installer. When it finishes, Hop runs in the background, with an icon in the taskbar.</li>
           </ol>
           <p class="tip"><b>Why the warning?</b> Hop is free and not code-signed yet, so Windows doesn't recognise it. The code is public on GitHub.</p>
           <a class="btn btn-ghost btn-sm" href="https://github.com/hmzakhalid/hop/releases/latest/download/Hop-Setup.exe"><svg aria-hidden="true"><use href="#i-down"/></svg>Hop-Setup.exe</a>
@@ -633,32 +634,32 @@ footer { padding: 56px 0 calc(48px + env(safe-area-inset-bottom)); border-top: 1
         </div>
       </article>
 
-      <article class="step reveal">
+      <article class="step reveal" id="connect">
         <div class="step-text">
           <span class="badge"><i>4</i>On your Mac</span>
-          <h3>Type the code from your PC</h3>
-          <p>Hop finds your PC by itself and asks for the code. Type the code from the PC's screen and click <b>Pair</b>.</p>
+          <h3>Click Connect, then Yes on the PC</h3>
+          <p>Hop finds your PC by itself and offers to connect. Click <b>Connect</b>, and your PC asks whether to allow your Mac. Click <b>Yes</b> there.</p>
           <ol>
-            <li>Pick your PC from the list (it's usually the only one).</li>
-            <li>Type the code exactly as shown. Capitals don't matter.</li>
-            <li>The code works once and expires after 2 minutes. Need a new one? On the PC, click the Hop icon in the taskbar → <b>Pair a Mac…</b></li>
+            <li>Both screens show the same six-digit number. If they don't match, click <b>No</b>.</li>
+            <li>Only an administrator signed in to the PC can click Yes. On most home PCs, that's you.</li>
+            <li>Prefer a code? Click <b>Use a Code…</b> on the Mac, and on the PC choose <b>Pair with a Code…</b> from the Hop icon in the taskbar.</li>
           </ol>
         </div>
         <div class="step-visual" aria-hidden="true">
           <div class="pair-wrap">
-            <div class="pc-code">
-              <div class="t"><span>Hop: Pair a Mac</span><span><i>—</i><i>▢</i><i>✕</i></span></div>
-              <div class="b"><small>Type this code on your Mac:</small><div class="code">7KQ2-M9XD-4TRB</div><small>Works once · expires in 2 minutes</small></div>
-            </div>
             <div class="mock mac-win" style="max-width:none">
               <div class="alert">
                 <img src="/apple-touch-icon.png" alt="">
-                <h5>Pair with a PC</h5>
-                <p>Type the code the PC shows.</p>
-                <div class="select"><span>Desk PC (192.168.1.20)</span><span>⌄</span></div>
-                <div class="field"><span id="typed"></span><span class="caret"></span></div>
-                <div class="btns"><span class="mac-btn">Cancel</span><span class="mac-btn blue">Pair</span></div>
+                <h5>Click Yes on Desk PC</h5>
+                <p>Desk PC is asking whoever is there to allow this Mac. It shows this number too.</p>
+                <span class="check-num">482 913</span>
+                <div class="btns"><span class="mac-btn">Cancel</span></div>
               </div>
+            </div>
+            <div class="pc-code">
+              <div class="t"><span>Hop: allow a Mac?</span><span><i>✕</i></span></div>
+              <div class="b"><p>“MacBook Pro” wants to use this PC's keyboard and mouse.</p><p style="margin-top:8px">Allow it only if your Mac shows the same number:</p><span class="check-num">482 913</span></div>
+              <div class="bar"><span class="pc-btn default ring">Yes</span><span class="pc-btn">No</span></div>
             </div>
           </div>
         </div>
@@ -782,7 +783,7 @@ footer { padding: 56px 0 calc(48px + env(safe-area-inset-bottom)); border-top: 1
       <div class="card reveal">
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v2"/></svg></div>
         <h3>Locked to your two computers</h3>
-        <p>Your Mac and PC pair once with a one-time code and remember each other's keys. Nothing else can connect.</p>
+        <p>Your Mac and PC pair once: you click Yes on the PC, both screens show the same number, and they remember each other's keys. Nothing else can connect.</p>
         <div class="tags"><span>Noise IK handshake</span><span>ChaCha20-Poly1305</span><span>Direct, no relay</span><span>Password fields stay on the Mac</span><span>No telemetry</span></div>
       </div>
     </div>
@@ -891,13 +892,6 @@ footer { padding: 56px 0 calc(48px + env(safe-area-inset-bottom)); border-top: 1
   const rows = $$("#map > div");
   let hot = 0;
   if (!reduced) setInterval(() => { rows.forEach((r, i) => r.classList.toggle("hot", i === hot)); hot = (hot + 1) % rows.length; }, 1400);
-
-  // Pairing step: the code types itself.
-  const typed = $("#typed");
-  const CODE = "7KQ2-M9XD-4TRB";
-  let ti = 0;
-  const typeCode = () => { ti = (ti + 1) % (CODE.length + 12); typed.textContent = CODE.slice(0, Math.min(ti, CODE.length)); };
-  if (reduced) typed.textContent = CODE; else setInterval(typeCode, 170);
 
   // ---- The demo stage --------------------------------------------------------------------
   const svg = $("#scene");

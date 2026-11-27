@@ -15,15 +15,15 @@
 1. Download [`Hop-Setup.exe`](https://github.com/hmzakhalid/hop/releases/latest/download/Hop-Setup.exe), run it and follow it. It asks for administrator permission, because it installs a small Windows service: with it, your Mac also works on the sign-in screen, in UAC prompts and in admin windows such as Task Manager. See [WINDOWS_SERVICE.md](WINDOWS_SERVICE.md).
    - **"Windows protected your PC":** Hop is not code-signed yet, so SmartScreen does not recognise it. Choose **More info → Run anyway**.
    - **Antivirus:** some antivirus apps, Microsoft Defender included, may flag an unsigned app that reads input and captures the screen. If yours removes Hop, restore it from the antivirus history and allow it. The source is public, so you can check what it does.
-2. At the end, leave **Pair a Mac now** ticked. A window shows a code like `7KQ2-M9XD-4TRB`. It works once and expires after 2 minutes.
-3. Later, pair again from the **Hop icon in the taskbar → Pair a Mac…**, or Start → Hop → **Pair a Mac with Hop**.
+2. When Setup finishes, Hop runs in the background, with an icon in the taskbar. There is nothing else to do on the PC until your Mac asks to connect.
+3. If asking does not work (see Troubleshooting), pair with a code instead: **Hop icon in the taskbar → Pair with a Code…**, or Start → Hop → **Pair with a Code**. The code works once and expires after 2 minutes.
 
 ### On the Mac
 
 1. Download [`Hop.dmg`](https://github.com/hmzakhalid/hop/releases/latest/download/Hop.dmg), open it, and drag **Hop** to **Applications**.
 2. Open Hop from Applications. Hop is not notarized by Apple yet, so the first time macOS says it cannot verify Hop. Choose **Done**, then open System Settings → **Privacy & Security**, scroll down, and choose **Open Anyway** next to the message about Hop. You do this once.
 3. macOS asks for **Accessibility** access: System Settings → Privacy & Security → Accessibility → turn on **Hop**. Hop starts by itself once it is allowed, and a keyboard icon appears in the menu bar. If macOS also asks about **finding devices on your local network**, allow it.
-4. Hop looks for your PC and asks for the code. Pick the PC and type the code it shows. (Later: menu-bar icon → **Pair with a PC…**.)
+4. Hop looks for your PC and offers to connect: click **Connect**. The PC shows a prompt; click **Yes** there. Both screens show the same six-digit number: if they differ, click **No**, because something on the network is in the middle. (Later: menu-bar icon → **Pair with a PC…**. To type a code instead, click **Use a Code…**.)
 5. Optional: **Settings → Open at Login**.
 
 The menu shows whether Hop is connected, lets you switch with a click, and holds the settings: where the PC is, switching by screen edge, ⌘ as the Windows key, and Mac shortcut translation.
@@ -101,7 +101,11 @@ It reports the round trip to the PC: p50, p90, p99 and loss. One way is about ha
 | ⌃⌥⌘→ does nothing, and the menu says "Paused: Secure Input is on" | A password field or a password manager (Bitwarden, 1Password, a browser login, Discord's login) has turned on macOS Secure Input, which hides keystrokes from every app, Hop included. Close it or lock it. If it stays on, lock and unlock the Mac (⌃⌘Q). As a last resort, log out and back in. |
 | The menu says Hop needs Accessibility access | System Settings → Privacy & Security → Accessibility → turn on Hop. If it is on but Hop still asks, select Hop in that list, remove it with **−**, then open Hop again and allow it. |
 | "Hop cannot be opened" or "Apple could not verify Hop" | System Settings → Privacy & Security → scroll down → **Open Anyway** next to the message about Hop. |
-| "The PC is not accepting pairing" | On the PC, choose **Pair a Mac…** from the Hop icon for a fresh code. |
+| "… has an older Hop that pairs only with a code" | Update Hop on the PC (run the new Setup), or click **Use a Code…**. |
+| "Only an administrator of … can allow a Mac" | A Mac paired with Hop can type on the sign-in screen and into admin prompts, so allowing one needs an administrator. Sign in to the PC as one, or pair with a code (Windows asks for an administrator's permission). |
+| "Nobody answered on …" | The prompt waits a minute. If the PC is locked, unlock it, then try again. |
+| "… is not taking requests right now" | After a request is turned down, the PC ignores requests for 10 seconds. Wait, then try again. |
+| "The PC is not accepting pairing" (with a code) | On the PC, choose **Pair with a Code…** from the Hop icon for a fresh code. |
 | "Accessibility access" | Turn it on for your terminal app in System Settings → Privacy & Security → Accessibility. |
 | Control comes back to the Mac on the lock screen or in Task Manager | The Hop service is not running: the taskbar icon says so. Run Setup again. |
 | The hotkey does not bring you back | Close `hop-agent` on the PC with its own keyboard or mouse; the Mac gets its input back within half a second. |
@@ -131,12 +135,12 @@ Everything the app does also works from a terminal, which is handy for scripts a
 
 | Command | What it does |
 |---|---|
-| `hop pair [--host IP]` | Pair, typing the code in the terminal |
+| `hop pair [--host IP] [--code]` | Pair: the PC asks to allow this Mac. `--code`: type the code the PC shows instead |
 | `hop run [--side S] [--edges] [--cmd-as-win] [--no-chords] [--speed X] [--stats]` | Run without the menu bar (macOS asks for Accessibility for the terminal app) |
 | `hop bench` | Measure the round trip to the PC |
 | `hop unpair` | Forget the PC |
 
 On the PC, `hop-agent` runs the same agent in a console window, for when you do not want the service:
-- `hop-agent` shows a code and runs;
+- `hop-agent` runs, asks in its window when a Mac asks to pair, and shows a code until one is paired;
 - `hop-agent pair` shows a fresh code;
 - `hop-agent install` and `hop-agent uninstall` manage the service from an administrator terminal.

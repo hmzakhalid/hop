@@ -97,7 +97,8 @@ Effects (live.rs): Cursor (cursor.rs) + badge (hud.rs)         ▼
 | Module | Purpose |
 |---|---|
 | `wire` | Packet and message formats for both channels; Windows key-code space (`code`); which mouse buttons travel |
-| `crypto` | Noise pairing (XXpsk3 over TCP, one deadline, `PairError`), sessions (IK over UDP), datagram sealing, replay window, pairing codes |
+| `crypto` | Pairing with a code (XXpsk3 over TCP, one deadline, `PairError`), sessions (IK over UDP), datagram sealing, replay window, pairing codes |
+| `ask` | Pairing by asking: the XX handshake with a committed nonce, the check number both screens show, the PC's answer, and "saved" before the PC stores |
 | `keymap` | Mac key codes to Windows scan codes; modifier bits; `mac::HYPER` |
 | `mapper` | `KeyMapper`: Mac key events to the Windows key set and ordered transitions (chords, lazy modifiers, entry-held modifiers) |
 | `layout` | Edges, entry and exit points, virtual PC cursor across monitors, DPI scale, `Side` |
@@ -106,7 +107,7 @@ Effects (live.rs): Cursor (cursor.rs) + badge (hud.rs)         ▼
 | `link` | Discovery, pairing client, `Link` (encrypted UDP to one PC; `maintain` connects and reconnects) |
 | `receiver` | `Receiver`: applies state to an `Injector`; `MIN_CLICK_US`; dead-man; retries; `Recorder` for tests (`test-support` feature) |
 | `responder` | `Responder`: the PC end of either channel (paired-key handshakes, replay-safe promotion, address following, the unknown-session hint) |
-| `agent` | The PC input loop: discovery replies, pairing window, acks |
+| `agent` | The PC input loop: discovery replies, the pairing code window, requests to pair (`Asker`, on their own thread), storing a pairing and switching to it, acks |
 | `video` | Screen-view rules: `Encoded` frames, fragments with Reed–Solomon parity, reassembly and loss, rate control, clock offset |
 | `stream` | The video channel: `serve` (PC) and `Client` (Mac, which keeps asking for frames on its own schedule); `FileSource` plays recordings |
 | `store` | `MacStore` / `AgentStore`: key file plus peer record, owner-only; `Store::lock` for changes, with a generation token |
@@ -120,13 +121,13 @@ Effects (live.rs): Cursor (cursor.rs) + badge (hud.rs)         ▼
 | Module | Purpose |
 |---|---|
 | `main` | Dispatch; `Hop.app` opened with no arguments starts the app |
-| `app` | The menu-bar app: status item and menu, the connection supervisor, pairing dialogs |
+| `app` | The menu-bar app: status item and menu, the connection supervisor, pairing dialogs (Connect, "Click Yes on the PC", or a code) |
 | `live` | The live engine shared by the app and `hop run`: tap callback, `MacEffects`, watchdog, signals, system watch, stats; drives whichever `Session` is attached |
 | `prefs` | The user's settings, saved as a `ControllerConfig` |
 | `login` | Open at Login (`SMAppService`) |
 | `updates` | Sparkle, loaded at runtime when the bundle ships it |
 | `cli` | `Command` and its options, usage text |
-| `pc` | The paired PC, as a library for the app and the commands: pair, forget, find, connect; its timings |
+| `pc` | The paired PC, as a library for the app and the commands: ask to pair, pair with a code, forget, find, connect; its timings |
 | `commands` | `hop pair`, `unpair`, `bench`, `view`: each returns an error for `main` to print |
 | `run` | `hop run`: connect from a terminal and run the live engine |
 | `screen` | The screen-view window's threads: one viewer per opening, each with its own stop flag |
@@ -147,7 +148,8 @@ Effects (live.rs): Cursor (cursor.rs) + badge (hud.rs)         ▼
 | `backoff` | Relaunch delays for the service's helper and the video process |
 | `lock` | When ⌃L locks the PC (Windows ignores an injected Win+L) |
 | `scm` | Service Control Manager queries, shared with `hop-tray` |
-| `bin/hop-tray` | The taskbar icon: service status, "Pair a Mac…" (elevated `hop-agent pair`) |
+| `bin/hop-tray` | The taskbar icon: service status, "Pair with a Code…" (elevated `hop-agent pair`) |
+| `asker` | Who answers when a Mac asks to pair: the terminal (console), or an administrator signed in at the PC, in a Windows prompt (service helper) |
 | `role` | Console versus service: storage, log, pairing, injector, the run loop setup |
 | `platform` | OS pieces: injector choice, Ctrl+C, service stop, memory and CPU, child processes tied to the agent |
 | `win` | `WinPlatform`: `SendInput`, monitors and DPI, cursor, secure-desktop following, Mouse Keys for a hidden pointer; a caught mode (swallow, selftest) that acts only through `SendInput` |

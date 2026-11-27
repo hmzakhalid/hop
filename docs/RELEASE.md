@@ -55,8 +55,8 @@ Hop is free software under the GPL-3.0. Releases are on [GitHub Releases](https:
 - installs to Program Files;
 - runs `hop-agent install`, which sets up the service, its protected data and the firewall rule;
 - starts the tray icon at every sign-in;
-- adds Start-menu shortcuts (Hop, Pair a Mac with Hop, Uninstall) and an Apps & features entry;
-- offers "Pair a Mac now" at the end.
+- adds Start-menu shortcuts (Hop, Pair with a Code, Uninstall) and an Apps & features entry;
+- ends by saying to click Connect on the Mac and Yes on the PC.
 
 The uninstaller removes the service, the firewall rule and the files. It keeps the pairing in ProgramData.
 

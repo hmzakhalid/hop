@@ -13,6 +13,7 @@
 pub const BUILD: &str = env!("HOP_BUILD");
 
 pub mod agent;
+pub mod ask;
 pub mod clock;
 pub mod controller;
 pub mod crypto;

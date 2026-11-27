@@ -2,7 +2,8 @@
 //! controller and link on the other, with a proxy in between that drops, duplicates and
 //! reorders datagrams.
 
-use hop_core::agent::{self, AgentConfig, AgentEvent, PairingWindow, Platform};
+use hop_core::agent::{self, AgentConfig, AgentEvent, Asker, PairingWindow, Platform};
+use hop_core::ask::{self, Answer};
 use hop_core::controller::{Controller, ControllerConfig, Effect, LeaveReason, Output};
 use hop_core::crypto::{new_pairing_code, PairError, StaticKeys};
 use hop_core::keymap::{mac, win, MacMod};
@@ -10,6 +11,7 @@ use hop_core::layout::Rect;
 use hop_core::link::{self, Link};
 use hop_core::receiver::{Injector, Op, Recorder};
 use hop_core::session::{self, Session};
+use hop_core::store::AgentStore;
 use hop_core::wire::{Monitor, LEASE_US, MAX_PACKET, PKT_DATA, PKT_SESSION_INIT};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,6 +52,10 @@ impl Platform for TestPlatform {
 
 struct Agent {
     addr: SocketAddr,
+    /// Where Macs ask to pair (when the agent has an asker).
+    asking: Option<SocketAddr>,
+    events: mpsc::Receiver<AgentEvent>,
+    store_dir: std::path::PathBuf,
     rec: Arc<Mutex<Recorder>>,
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
@@ -61,23 +67,49 @@ impl Drop for Agent {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+        let _ = std::fs::remove_dir_all(&self.store_dir);
+    }
+}
+
+/// A store in a fresh temporary folder.
+fn temp_store() -> AgentStore {
+    let dir = std::env::temp_dir().join(format!("hop-e2e-{:032x}", hop_core::crypto::random_u128()));
+    AgentStore::new(dir)
+}
+
+/// Answers every request with `.0`, and records what it was shown.
+struct FixedAsker(Answer, Mutex<Vec<(String, String, Option<String>)>>);
+
+impl Asker for FixedAsker {
+    fn ask(&self, mac: &str, check: &str, replaces: Option<&str>) -> Answer {
+        self.1.lock().unwrap().push((mac.into(), check.into(), replaces.map(String::from)));
+        self.0
     }
 }
 
 /// Start an agent and pair `mac` with it.
 fn start_agent(mac: &StaticKeys) -> Agent {
+    start_agent_asking(mac, None)
+}
+
+/// Start an agent that pairs `mac` with a code, and takes requests with `asker` if given.
+fn start_agent_asking(mac: &StaticKeys, asker: Option<Arc<dyn Asker>>) -> Agent {
     let pc = StaticKeys::generate();
     let code = new_pairing_code();
     let rec = Arc::new(Mutex::new(Recorder::default()));
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
     let tx = Mutex::new(tx);
+    let store = temp_store();
+    let store_dir = store.dir.clone();
+    let has_asker = asker.is_some();
     let cfg = AgentConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
         name: "Test PC".into(),
         keys: pc,
-        paired: None,
+        store,
         pairing: Some(PairingWindow::new(code.clone())),
+        asker,
     };
     let mut platform = TestPlatform(rec.clone());
     let stop2 = stop.clone();
@@ -91,6 +123,10 @@ fn start_agent(mac: &StaticKeys) -> Agent {
         AgentEvent::Listening(a) => a,
         e => panic!("{e:?}"),
     };
+    let asking = has_asker.then(|| match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+        AgentEvent::Asking(a) => a,
+        e => panic!("{e:?}"),
+    });
     let paired = link::pair(addr, mac, &code, "Test Mac").unwrap();
     assert_eq!(paired.name, "Test PC");
     // Wait until the agent has stored the key.
@@ -100,7 +136,30 @@ fn start_agent(mac: &StaticKeys) -> Agent {
             break;
         }
     }
-    Agent { addr, rec, stop, handle: Some(handle) }
+    Agent { addr, asking, events: rx, store_dir, rec, stop, handle: Some(handle) }
+}
+
+/// Ask the agent to pair `mac`; returns what the PC answered (and on yes, the Mac has saved).
+fn ask_agent(agent: &Agent, mac: &StaticKeys, name: &str) -> Result<(Answer, u32), hop_core::crypto::PairError> {
+    let s = std::net::TcpStream::connect(agent.asking.expect("the agent takes requests"))?;
+    let mut a = ask::ask(s, mac, name)?;
+    let answer = a.answer()?;
+    let check = a.check;
+    if answer == Answer::Allowed {
+        a.saved()?;
+    }
+    Ok((answer, check))
+}
+
+/// Wait for the agent to report that `mac` paired.
+fn wait_paired(agent: &Agent, mac: &StaticKeys) {
+    loop {
+        match agent.events.recv_timeout(Duration::from_secs(5)).expect("a pairing event") {
+            AgentEvent::Paired(p) if p.public == mac.public => return,
+            AgentEvent::PairingFailed(why) => panic!("{why}"),
+            _ => {}
+        }
+    }
 }
 
 /// A UDP relay between the Mac link and the agent that misbehaves on purpose.
@@ -476,4 +535,55 @@ fn pairing_alone_works_beside_a_running_agent() {
     assert_eq!((pc.name.as_str(), pc.public), ("Service PC", pc_public));
     let mac = pairing.join().unwrap().expect("paired");
     assert_eq!((mac.name.as_str(), mac.public), ("Second Mac", new_mac.public));
+}
+
+#[test]
+fn a_mac_that_asks_and_is_allowed_pairs_and_drives_the_pc() {
+    let first = StaticKeys::generate();
+    let asker = Arc::new(FixedAsker(Answer::Allowed, Mutex::default()));
+    let agent = start_agent_asking(&first, Some(asker.clone()));
+    let second = StaticKeys::generate();
+    let (answer, check) = ask_agent(&agent, &second, "Second Mac").unwrap();
+    assert_eq!(answer, Answer::Allowed);
+    wait_paired(&agent, &second);
+    let shown = asker.1.lock().unwrap().clone();
+    assert_eq!(shown, vec![("Second Mac".to_string(), ask::check_text(check), Some("Test Mac".to_string()))]);
+    assert_eq!(AgentStore::new(agent.store_dir.clone()).peer().unwrap().public, second.public, "stored for next time");
+    let m = Mac::new(second, discover_pc(&agent), agent.addr);
+    m.wait_for_pc();
+    m.enter();
+    m.tap(0x04); // H
+    m.settle();
+    assert_eq!(key_downs(&agent.rec.lock().unwrap()), vec![0x23]);
+}
+
+#[test]
+fn allowing_another_mac_ends_the_old_ones_session_and_lets_go_of_its_keys() {
+    let first = StaticKeys::generate();
+    let agent = start_agent_asking(&first, Some(Arc::new(FixedAsker(Answer::Allowed, Mutex::default()))));
+    let old = Mac::new(first, discover_pc(&agent), agent.addr);
+    old.wait_for_pc();
+    old.enter();
+    old.modifier(MacMod::LShift, true);
+    old.settle();
+    assert_eq!(key_downs(&agent.rec.lock().unwrap()), vec![0x2A]);
+
+    let second = StaticKeys::generate();
+    ask_agent(&agent, &second, "Second Mac").unwrap();
+    wait_paired(&agent, &second);
+    eventually("the old Mac's Shift let go", Duration::from_secs(2), || agent.rec.lock().unwrap().ops.contains(&Op::Key(0x2A, false)));
+    let before = agent.rec.lock().unwrap().ops.len();
+    old.tap(0x00);
+    thread::sleep(Duration::from_millis(300));
+    assert!(!agent.rec.lock().unwrap().ops[before..].iter().any(|o| matches!(o, Op::Key(_, true))), "the old Mac types no more");
+}
+
+#[test]
+fn a_mac_turned_down_is_not_paired_and_cannot_ask_again_at_once() {
+    let first = StaticKeys::generate();
+    let agent = start_agent_asking(&first, Some(Arc::new(FixedAsker(Answer::Declined, Mutex::default()))));
+    let other = StaticKeys::generate();
+    assert_eq!(ask_agent(&agent, &other, "Other").unwrap().0, Answer::Declined);
+    assert!(ask_agent(&agent, &other, "Other").is_err(), "refused during the cool-down");
+    assert_eq!(AgentStore::new(agent.store_dir.clone()).peer().unwrap().public, first.public, "still the first Mac");
 }

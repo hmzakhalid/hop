@@ -38,10 +38,7 @@ VIAddVersionKey "LegalCopyright" "(c) 2026 the Hop authors. Free software under 
 !define MUI_UNICON "${STAGE}\hop.ico"
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TEXT "Hop lets you use your Mac's keyboard and trackpad on this PC.$\r$\n$\r$\nSetup installs a small Windows service, so your Mac also works on the sign-in screen, in UAC prompts and in admin windows such as Task Manager.$\r$\n$\r$\nClick Next to continue."
-!define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_TEXT "Pair a Mac now"
-!define MUI_FINISHPAGE_RUN_FUNCTION PairNow
-!define MUI_FINISHPAGE_TEXT "Hop is installed and running. Look for its icon in the taskbar.$\r$\n$\r$\nTo pair, keep the box below ticked: a window will show a code to type on your Mac."
+!define MUI_FINISHPAGE_TEXT "Hop is installed and running. Look for its icon in the taskbar.$\r$\n$\r$\nNow open Hop on your Mac and click Connect. This PC will ask you to allow it: click Yes."
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${STAGE}\LICENSE.txt"
@@ -89,7 +86,8 @@ Section "Hop"
   WriteRegStr HKLM "${RUN_KEY}" "${PRODUCT}" '"$INSTDIR\hop-tray.exe"'
   CreateDirectory "$SMPROGRAMS\${PRODUCT}"
   CreateShortcut "$SMPROGRAMS\${PRODUCT}\Hop.lnk" "$INSTDIR\hop-tray.exe"
-  CreateShortcut "$SMPROGRAMS\${PRODUCT}\Pair a Mac with Hop.lnk" "$INSTDIR\hop-tray.exe" "--pair"
+  Delete "$SMPROGRAMS\${PRODUCT}\Pair a Mac with Hop.lnk" ; its name before 1.0.0's update
+  CreateShortcut "$SMPROGRAMS\${PRODUCT}\Pair with a Code.lnk" "$INSTDIR\hop-tray.exe" "--pair"
   CreateShortcut "$SMPROGRAMS\${PRODUCT}\Uninstall Hop.lnk" "$INSTDIR\Uninstall Hop.exe"
 
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT}"
@@ -106,11 +104,6 @@ Section "Hop"
   ; Start the tray icon now as the signed-in user, not elevated like Setup.
   Exec '"$WINDIR\explorer.exe" "$INSTDIR\hop-tray.exe"'
 SectionEnd
-
-Function PairNow
-  ; Setup is already elevated, so this opens the pairing window without another prompt.
-  Exec '"$INSTDIR\hop-agent.exe" pair --keep-open'
-FunctionEnd
 
 Section "Uninstall"
   SetShellVarContext all

@@ -36,7 +36,8 @@
   - No key ever stays stuck on the PC.
   - Password fields on the Mac never cross over.
 - **Private:**
-  - Paired with a one-time code, and end-to-end encrypted (Noise IK, ChaCha20-Poly1305).
+  - Pairing is a click: **Connect** on the Mac, **Yes** on the PC, with a matching number on both screens. A one-time code works too.
+  - End-to-end encrypted (Noise, ChaCha20-Poly1305).
   - Your Mac talks to your PC directly: nothing goes through a server.
 
 ## Set up (about 2 minutes)
@@ -46,11 +47,12 @@ You need a Mac with macOS 14 or later (Apple silicon or Intel), a PC with Window
 1. **On the PC:**
    1. Download and run [**Hop-Setup.exe**](https://github.com/hmzakhalid/hop/releases/latest/download/Hop-Setup.exe).
    2. If Windows says *"Windows protected your PC"*, click **More info → Run anyway**. Hop isn't code-signed yet.
-   3. At the end, leave **Pair a Mac now** ticked. A window shows a code like `7KQ2-M9XD-4TRB`.
+   3. That's all on the PC: Hop runs in the background, with an icon in the taskbar.
 2. **On the Mac:**
    1. Download [**Hop.dmg**](https://github.com/hmzakhalid/hop/releases/latest/download/Hop.dmg), open it, and drag Hop to Applications. Then open Hop.
    2. If macOS says it can't verify Hop, click **Done**. Then go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**. You do this once.
-   3. Turn on Hop under **Accessibility** when asked. Hop finds your PC and asks for the code: type it in.
+   3. Turn on Hop under **Accessibility** when asked. Hop finds your PC: click **Connect**.
+   4. On the PC, click **Yes**. Both screens show the same number.
 3. **Press ⌃⌥⌘→.** Your keyboard and pointer are on the PC. ⌃⌥⌘← brings them back.
 
 The [user guide](docs/USER_GUIDE.md) covers every key, setting and fix.

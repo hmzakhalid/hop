@@ -40,7 +40,7 @@ fn main() {
     let result = match cmd {
         Command::App => app::run(),
         Command::Run { host, opts } => run::run(host.as_deref(), &opts),
-        Command::Pair { host } => commands::pair(host.as_deref()),
+        Command::Pair { host, code } => commands::pair(host.as_deref(), code),
         Command::Bench { host, count } => commands::bench(host.as_deref(), count),
         Command::Unpair => commands::unpair(),
         Command::View { host } => commands::view(host.as_deref()),

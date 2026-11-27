@@ -3,7 +3,7 @@
 
 use hop_core::agent::{self, AgentConfig, AgentEvent, PairingWindow, Platform, PAIRING_MAX_FAILURES, PAIRING_TTL};
 use hop_core::crypto::{fingerprint, new_pairing_code};
-use hop_core::store::{AgentStore, MacRecord};
+use hop_core::store::AgentStore;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -150,7 +150,7 @@ pub fn paired_line(p: &hop_core::crypto::Paired) -> String {
 pub fn pairing_banner(code: &str) -> String {
     use hop_core::ui::MAC_PAIR_ITEM;
     format!(
-        "\n  Pairing code:  {code}\n\n  On the Mac, choose \"{MAC_PAIR_ITEM}\" from the Hop menu (or run: hop pair)\n  and type the code. It works once, expires in {} minutes,\n  and closes after {PAIRING_MAX_FAILURES} wrong tries.\n",
+        "\n  Pairing code:  {code}\n\n  On the Mac, choose \"{MAC_PAIR_ITEM}\" from the Hop menu, click \"Use a Code\"\n  (or run: hop pair --code) and type the code. It works once, expires in {} minutes,\n  and closes after {PAIRING_MAX_FAILURES} wrong tries.\n",
         PAIRING_TTL.as_secs() / 60
     )
 }
@@ -203,7 +203,7 @@ fn serve(role: Role, opts: RunOptions, store: AgentStore, log: &Arc<Log>) -> Res
         Some(PairingWindow::new(code))
     } else {
         if peer.is_none() {
-            log.say(format!("Not paired. Choose \"{}…\" from the Hop icon in the taskbar (or run `hop-agent pair` as administrator).", hop_core::ui::PC_PAIR_ITEM));
+            log.say(format!("Not paired. On the Mac, choose \"{}\" from the Hop menu; this PC asks you to allow it.", hop_core::ui::MAC_PAIR_ITEM));
         }
         None
     };
@@ -235,19 +235,15 @@ fn serve(role: Role, opts: RunOptions, store: AgentStore, log: &Arc<Log>) -> Res
         bind: ([0, 0, 0, 0], opts.port).into(),
         name,
         keys,
-        paired: peer.map(|p| p.public),
+        store,
         pairing,
+        asker: crate::asker::for_role(role),
     };
     let ev_log = log.clone();
     let events = move |e: AgentEvent| match e {
         AgentEvent::Listening(a) => ev_log.say(format!("Listening on {a}.")),
-        AgentEvent::Paired(p) => {
-            let rec = MacRecord { public: p.public, name: p.name.clone() };
-            match store.lock().and_then(|l| l.save_peer(&rec)) {
-                Ok(()) => ev_log.say(paired_line(&p)),
-                Err(e) => ev_log.say(format!("Paired with {}, but saving failed: {e}", p.name)),
-            }
-        }
+        AgentEvent::Asking(a) => ev_log.say(format!("Macs can ask to pair on TCP port {}.", a.port())),
+        AgentEvent::Paired(p) => ev_log.say(paired_line(&p)),
         AgentEvent::PairingFailed(why) => ev_log.say(format!("Pairing attempt failed: {why}")),
         AgentEvent::SessionStarted(a) => ev_log.say(format!("Mac connected from {a}.")),
     };

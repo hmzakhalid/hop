@@ -4,7 +4,9 @@
 
 The first public release. Hop is free and open source under the GPL-3.0.
 
-Updated on 27 November 2026 with fixes. If you downloaded Hop before then, download it again and install it over the old one:
+Updated on 27 November 2026. If you downloaded Hop before then, download it again on both machines and install it over the old one:
+- **Pairing is a click:** Connect on the Mac, Yes on the PC, with the same number on both screens. A code still works, from **Use a Code…**.
+- A Mac paired by the first download no longer shows the pairing window at every launch.
 - Reinstalling Hop on the PC no longer swaps the PC's key, which broke pairing.
 - The Mac keeps up when the PC moves to a new network address.
 - A pairing code stops working as soon as it expires.
@@ -26,9 +28,9 @@ Updated on 27 November 2026 with fixes. If you downloaded Hop before then, downl
   - No key ever stays stuck on the PC.
   - Password fields never cross over.
 - **Private:**
-  - Paired with a one-time code, end-to-end encrypted (Noise IK, ChaCha20-Poly1305).
+  - Paired with a click on each machine (or a one-time code), end-to-end encrypted (Noise, ChaCha20-Poly1305).
   - A direct connection between your two computers: no account, no cloud server, no tracking.
-- **Easy setup:** the Mac app finds the PC and asks for its code the first time it opens.
+- **Easy setup:** the Mac app finds the PC and offers to connect the first time it opens; the PC asks you to allow it.
 
 Known limits:
 - **Not signed yet:**

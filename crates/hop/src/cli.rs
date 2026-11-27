@@ -10,7 +10,9 @@ hop: use this Mac's keyboard and trackpad on a Windows PC.
 
 Usage:
   hop app                the menu-bar app (opening Hop.app does this)
-  hop pair [--host IP]   pair with a PC running hop-agent (type the code it shows)
+  hop pair [--host IP] [--code]
+                         pair with a PC running Hop: the PC asks you to allow it
+                         (--code: type the code the PC shows instead)
   hop [run] [options]    start; switch to the PC and back with ⌃⌥⌘ + arrow
   hop bench [--host IP] [--count N]
                          measure the round trip to the PC
@@ -82,7 +84,8 @@ const WORDS: &[(&str, Word)] = &[
 pub enum Command {
     App,
     Run { host: Option<String>, opts: RunOptions },
-    Pair { host: Option<String> },
+    /// `code`: type the code the PC shows, instead of asking the PC.
+    Pair { host: Option<String>, code: bool },
     Bench { host: Option<String>, count: usize },
     Unpair,
     /// A scripted session through the real controller (agent in `--swallow` mode).
@@ -125,6 +128,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, ParseErr
     let mut word = Word::Run;
     let mut host = None;
     let mut count = None;
+    let mut code = false;
     #[cfg(feature = "dev-tools")]
     let mut file: Option<String> = None;
     let mut run = RunOptions { cfg: ControllerConfig::default(), verbose: false, stats: false };
@@ -139,6 +143,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, ParseErr
         }
         match a.as_str() {
             "--host" => host = Some(it.next().ok_or("--host needs an address")?),
+            "--code" => code = true,
             "--count" => count = Some(it.next().and_then(|v| v.parse().ok()).filter(|n| *n >= 10).ok_or("--count needs a number of at least 10")?),
             #[cfg(feature = "dev-tools")]
             "--file" => file = Some(it.next().ok_or("--file needs a path")?),
@@ -161,6 +166,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, ParseErr
     #[cfg(not(feature = "dev-tools"))]
     let badge = false;
     only(word == Word::Bench || count.is_none(), "--count")?;
+    only(word == Word::Pair || !code, "--code")?;
     #[cfg(feature = "dev-tools")]
     only(word == Word::View || file.is_none(), "--file")?;
     only(word == Word::Run || !run_flags, "run options")?;
@@ -169,7 +175,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, ParseErr
     Ok(match word {
         Word::App => Command::App,
         Word::Run => Command::Run { host, opts: run },
-        Word::Pair => Command::Pair { host },
+        Word::Pair => Command::Pair { host, code },
         Word::Bench => Command::Bench { host, count: count.unwrap_or(2000) },
         Word::Unpair => Command::Unpair,
         #[cfg(feature = "dev-tools")]
@@ -207,6 +213,8 @@ mod tests {
         assert!(matches!(p("bench --count 50").unwrap(), Command::Bench { count: 50, .. }));
         assert!(p("run --count 5").is_err());
         assert!(p("pair --edges").is_err());
+        assert!(matches!(p("pair --code").unwrap(), Command::Pair { host: None, code: true }));
+        assert!(p("run --code").is_err());
         assert!(p("unpair --host 1.2.3.4").is_err());
         assert!(matches!(p("view").unwrap(), Command::View { host: None }));
         assert!(p("--speed 0").is_err());

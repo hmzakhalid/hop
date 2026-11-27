@@ -2,13 +2,14 @@
 //! command line alike; errors are sentences for the user.
 
 use crate::net;
-use hop_core::crypto::PairError;
+use hop_core::ask::{self, Answer};
+use hop_core::crypto::{PairError, StaticKeys};
 use hop_core::link::{self, Found, Link};
 use hop_core::ui::PC_PAIR_ITEM;
 use hop_core::store::{MacStore, PcRecord};
 use hop_core::wire::DEFAULT_PORT;
 use std::io;
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,17 +46,74 @@ pub fn locate(rec: &PcRecord) -> Option<SocketAddr> {
     found.into_iter().find(|f| f.public == rec.public).map(|f| f.addr).or(rec.addr)
 }
 
+fn saving(e: io::Error) -> String {
+    format!("Could not save the pairing: {e}")
+}
+
+/// A pairing that starts now: its generation, and this Mac's key. Under the lock, so two
+/// pairings at once cannot each make a key on a first pairing. The exchange itself runs unlocked.
+fn begin(store: &MacStore) -> Result<(String, StaticKeys), String> {
+    let mut lock = store.lock().map_err(saving)?;
+    let keys = store.keys().map_err(|e| format!("cannot read or create this Mac's key in {}: {e}", store.dir.display()))?;
+    Ok((lock.new_generation().map_err(saving)?, keys))
+}
+
+/// Store `rec`, unless a Forget or a newer pairing replaced this one.
+fn finish(store: &MacStore, generation: &str, rec: &PcRecord) -> Result<(), String> {
+    let lock = store.lock().map_err(saving)?;
+    if lock.generation().as_deref() != Some(generation) {
+        return Err("A newer pairing or Forget replaced this one. Pair again if you still want this PC.".into());
+    }
+    lock.save_peer(rec).map_err(saving)
+}
+
+/// Ask the PC at `addr` (its agent's address; `announced`: the key it gave when found) to pair:
+/// someone at the PC allows it. `waiting(number, cancel)` is called once the number both screens
+/// show is known; shutting `cancel` down gives up.
+pub fn ask(addr: SocketAddr, name: &str, announced: Option<[u8; 32]>, waiting: impl FnOnce(String, TcpStream)) -> Result<PcRecord, String> {
+    let store = store();
+    let (generation, keys) = begin(&store)?;
+    let to = SocketAddr::new(addr.ip(), ask::port(addr.port()).ok_or("no port to ask on")?);
+    let s = TcpStream::connect_timeout(&to, CONNECT_TIMEOUT).map_err(|e| match e.kind() {
+        io::ErrorKind::ConnectionRefused => {
+            format!("{name} has an older Hop that pairs only with a code. Update Hop on the PC, or use a code.")
+        }
+        _ => format!("Could not reach {name}: {e}"),
+    })?;
+    let _ = s.set_nodelay(true); // latency only
+    let mut asking = ask::ask(s, &keys, &net::host_name()).map_err(|e| match e {
+        PairError::TooLong => format!("{name} did not respond."),
+        PairError::Io(e) if matches!(e.kind(), io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset) => {
+            format!("{name} is not taking requests right now. Try again in a few seconds.")
+        }
+        e => format!("Pairing failed: {e}"),
+    })?;
+    if announced.is_some_and(|k| k != asking.pc.public) {
+        return Err(format!("{name} answered with a different identity than it announced. Try again."));
+    }
+    let cancel = asking.canceller().map_err(|e| e.to_string())?;
+    waiting(ask::check_text(asking.check), cancel);
+    let pc = asking.pc.name.clone();
+    match asking.answer().map_err(|e| match e {
+        PairError::TooLong => format!("Nobody answered on {pc}."),
+        e => format!("Pairing failed: {e}"),
+    })? {
+        Answer::Allowed => {}
+        Answer::Declined => return Err(format!("{pc} said no.")),
+        Answer::NeedsAdmin => return Err(format!("Only an administrator of {pc} can allow a Mac. Sign in to the PC as one, or use a code.")),
+        Answer::NoAnswer => return Err(format!("Nobody answered on {pc}. If it is locked, unlock it and try again.")),
+    }
+    let rec = PcRecord { public: asking.pc.public, name: pc, addr: Some(addr) };
+    finish(&store, &generation, &rec)?;
+    // Only now does the PC store it; if this fails, the PC never will, and pairing again fixes it.
+    asking.saved().map_err(|e| format!("Paired here, but {} did not hear back: {e}. Pair again.", rec.name))?;
+    Ok(rec)
+}
+
 /// Pair with the PC at `addr` using the code it shows, and remember it.
 pub fn pair_with(addr: SocketAddr, code: &str) -> Result<PcRecord, String> {
     let store = store();
-    let saving = |e: io::Error| format!("Could not save the pairing: {e}");
-    // Under the lock: a new generation, and this Mac's key (made here on a first pairing, so two
-    // pairings at once cannot each make one). The handshake itself runs unlocked.
-    let (generation, keys) = {
-        let mut lock = store.lock().map_err(saving)?;
-        let keys = store.keys().map_err(|e| format!("cannot read or create this Mac's key in {}: {e}", store.dir.display()))?;
-        (lock.new_generation().map_err(saving)?, keys)
-    };
+    let (generation, keys) = begin(&store)?;
     let p = link::pair(addr, &keys, code, &net::host_name()).map_err(|e| match e {
         PairError::WrongCode => "That code is not right. Show a fresh one on the PC and try again.".to_string(),
         PairError::Io(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
@@ -65,11 +123,7 @@ pub fn pair_with(addr: SocketAddr, code: &str) -> Result<PcRecord, String> {
         PairError::Io(e) => format!("Pairing failed: {e}"),
     })?;
     let rec = PcRecord { public: p.public, name: p.name, addr: Some(addr) };
-    let lock = store.lock().map_err(saving)?;
-    if lock.generation().as_deref() != Some(generation.as_str()) {
-        return Err("A newer pairing or Forget replaced this one. Pair again if you still want this PC.".into());
-    }
-    lock.save_peer(&rec).map_err(saving)?;
+    finish(&store, &generation, &rec)?;
     Ok(rec)
 }
 
@@ -78,9 +132,11 @@ pub fn forget() -> io::Result<bool> {
     store().lock()?.forget_peer()
 }
 
-/// Whether this Mac has never started a pairing (nor forgotten one): a first run.
+/// Whether this Mac has never paired, started a pairing, nor forgotten one: a first run. (A Mac
+/// paired by Hop before generations existed has a PC but no generation.)
 pub fn never_paired() -> bool {
-    store().lock().is_ok_and(|l| l.generation().is_none())
+    let store = store();
+    store.peer().is_none() && store.lock().is_ok_and(|l| l.generation().is_none())
 }
 
 /// Whether the PC with this key is still the paired one.

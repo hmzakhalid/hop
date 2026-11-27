@@ -12,9 +12,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub fn pair(host: Option<&str>) -> Result<(), String> {
-    let (addr, label) = match host {
-        Some(h) => (pc::parse_host(h)?, h.to_string()),
+/// Pair with a PC: ask it (someone there allows this Mac), or with `code`, type the code it shows.
+pub fn pair(host: Option<&str>, code: bool) -> Result<(), String> {
+    let (addr, label, announced) = match host {
+        Some(h) => (pc::parse_host(h)?, h.to_string(), None),
         None => {
             println!("Looking for PCs running hop-agent…");
             let found = pc::discover()?;
@@ -29,12 +30,19 @@ pub fn pair(host: Option<&str>) -> Result<(), String> {
                     &found[pick.ok_or("no such PC")? - 1]
                 }
             };
-            (f.addr, f.name.clone())
+            (f.addr, f.name.clone(), Some(f.public))
         }
     };
-    println!("Pairing with {label} at {}.", addr.ip());
-    let code = prompt("Type the code shown on the PC: ");
-    let rec = pc::pair_with(addr, &code)?;
+    let rec = if code {
+        println!("Pairing with {label} at {}.", addr.ip());
+        let code = prompt("Type the code shown on the PC: ");
+        pc::pair_with(addr, &code)?
+    } else {
+        println!("Asking {label} at {} to allow this Mac…", addr.ip());
+        pc::ask(addr, &label, announced, |number, _| {
+            println!("On the PC, check that it shows {number}, then click Yes. (Ctrl+C gives up.)");
+        })?
+    };
     println!("Paired with {} (key {}).", rec.name, fingerprint(&rec.public));
     println!("Now run: hop");
     Ok(())

@@ -2,11 +2,11 @@
 
 **Windows PC** (Windows 10 or 11): download **Hop-Setup.exe** and run it.
 - If Windows says "Windows protected your PC", choose **More info → Run anyway**. Hop is not code-signed yet.
-- Leave **Pair a Mac now** ticked at the end: a window shows a code.
+- Hop then runs in the background, with an icon in the taskbar.
 
 **Mac** (macOS 14 or later, Apple silicon or Intel): download **Hop.dmg**, open it and drag Hop to Applications.
 - The first time you open it, macOS says it can't verify Hop. Choose **Done**, then System Settings → **Privacy & Security** → **Open Anyway**.
-- Allow **Accessibility** when asked. Hop then looks for your PC: type the code it shows.
+- Allow **Accessibility** when asked. Hop then finds your PC: click **Connect**, then click **Yes** on the PC. Both screens show the same number.
 
 Press **⌃⌥⌘→** to use the PC and **⌃⌥⌘←** to come back.
 

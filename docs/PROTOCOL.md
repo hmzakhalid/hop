@@ -36,13 +36,31 @@ Latency measurement (`hop bench`).
 
 ## Pairing
 
+Two ways, with the same result: each side stores the other's static key (`store.rs`). From then on, the PC accepts sessions from that one key only. A new pairing ends the previous Mac's input session at once, and the PC releases whatever it held.
+
+### By asking (the usual way)
+
+The Mac asks; someone at the PC allows it (`ask.rs`). Over TCP on the agent's port + 2 (47822), so a code shown beside the Windows service, which holds the TCP twin of the agent's port, never collides with it.
+
+1. **Handshake:** `Noise_XX_25519_ChaChaPoly_BLAKE2s`, prologue `hop ask v1`. Message 2's payload is a commitment to the PC's 32-byte nonce, BLAKE2s(`hop ask commit v1\0` ‖ nonce), then the PC's name. Message 3's payload is the Mac's 32-byte nonce, then the Mac's name.
+2. **Reveal:** the PC sends its nonce. The Mac checks it against the commitment.
+3. **Check number:** the first 4 bytes (little-endian) of BLAKE2s(`hop ask check v1\0` ‖ handshake hash ‖ Mac nonce ‖ PC nonce), modulo 1,000,000, shown as `482 913` on both screens. A machine in the middle runs two handshakes and must fix its own nonce in each before it learns the other side's, so it cannot make the two numbers agree, except by a one-in-a-million chance per try.
+4. **Answer:** the PC asks whoever is there, and sends one byte: `y` allowed, `n` declined, `a` needs an administrator, `t` nobody answered.
+5. **Saved:** on `y`, the Mac stores the PC, then sends `saved`. The PC stores the Mac only on `saved`, so a Mac that gave up never replaces the PC's pairing.
+
+**Deadlines:** the handshake and the reveal take at most 10 s; the person at the PC has 60 s (the Mac waits 5 s more); `saved` must arrive within 10 s.
+
+**Who answers:** the console agent asks in its terminal. The Windows service's helper shows a Yes/No prompt to the user signed in to its session, but only if that user is an administrator, as a code beside the service needs one.
+
+**Spam:** one request at a time. After a request is turned down or fails, the PC drops further requests for 10 s.
+
+### With a code
+
 The agent shows a 12-character code: 60 bits, valid for 2 minutes, at most 3 wrong attempts.
 
-**Handshake:** `Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s` over TCP. The PSK is BLAKE2s over a domain separator and the normalised code.
+**Handshake:** `Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s` over TCP on the agent's port. The PSK is BLAKE2s over a domain separator and the normalised code.
 
 **Confirmation:** the PC answers with a confirmation sealed under the session keys. The Mac pins the PC's X25519 key only after that confirmation checks out, so a responder that does not know the code cannot get pinned.
-
-**Result:** each side stores the other's static key (`store.rs`). From then on, the PC accepts sessions from that one key only.
 
 ## Sessions
 

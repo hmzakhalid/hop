@@ -24,15 +24,15 @@ const TAG: usize = 16;
 /// Bytes a `DATA` packet adds around its plaintext: type, receiver index, nonce and tag.
 pub const DATA_OVERHEAD: usize = 1 + 4 + 8 + TAG;
 
-fn err(kind: io::ErrorKind, msg: impl Into<String>) -> io::Error {
+pub(crate) fn err(kind: io::ErrorKind, msg: impl Into<String>) -> io::Error {
     io::Error::new(kind, msg.into())
 }
 
-fn noise_err(e: snow::Error) -> io::Error {
+pub(crate) fn noise_err(e: snow::Error) -> io::Error {
     err(io::ErrorKind::InvalidData, format!("noise: {e}"))
 }
 
-fn builder(pattern: &str) -> Builder<'_> {
+pub(crate) fn builder(pattern: &str) -> Builder<'_> {
     Builder::new(pattern.parse().expect("valid noise pattern"))
 }
 
@@ -343,9 +343,9 @@ pub const PAIRING_EXCHANGE: Duration = Duration::from_secs(10);
 
 /// A TCP stream that gives up at `until`, however slowly the bytes arrive: each read or write
 /// may wait only for the time left.
-struct Bounded<'a> {
-    s: &'a mut TcpStream,
-    until: Instant,
+pub(crate) struct Bounded<'a> {
+    pub(crate) s: &'a mut TcpStream,
+    pub(crate) until: Instant,
 }
 
 impl Bounded<'_> {
@@ -378,14 +378,14 @@ impl Write for Bounded<'_> {
     }
 }
 
-fn send_frame(s: &mut impl Write, b: &[u8]) -> io::Result<()> {
+pub(crate) fn send_frame(s: &mut impl Write, b: &[u8]) -> io::Result<()> {
     let len = u16::try_from(b.len()).map_err(|_| err(io::ErrorKind::InvalidInput, "frame too big"))?;
     s.write_all(&len.to_be_bytes())?;
     s.write_all(b)?;
     s.flush()
 }
 
-fn recv_frame(s: &mut impl Read) -> io::Result<Vec<u8>> {
+pub(crate) fn recv_frame(s: &mut impl Read) -> io::Result<Vec<u8>> {
     let mut len = [0u8; 2];
     s.read_exact(&mut len)?;
     let mut b = vec![0u8; u16::from_be_bytes(len) as usize];

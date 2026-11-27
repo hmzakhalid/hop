@@ -22,8 +22,9 @@ use objc2_app_kit::{
     NSStatusBar, NSStatusItem, NSTextField, NSVariableStatusItemLength, NSView, NSWorkspace,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL};
-use std::cell::{Cell, OnceCell};
-use std::net::SocketAddr;
+use hop_core::store::PcRecord;
+use std::cell::{Cell, OnceCell, RefCell};
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -524,10 +525,29 @@ fn open_url(url: &str) {
 thread_local! {
     /// A pairing dialog is up, or about to be (main thread).
     static PAIRING: Cell<bool> = const { Cell::new(false) };
+    /// Where a request to a PC stands (main thread).
+    static ASKING: RefCell<Asking> = const { RefCell::new(Asking::No) };
 }
 
-/// Pair with a PC: search the network (off the main thread), then ask which PC and for its
-/// code. Main thread. Does nothing while a pairing is already under way.
+/// A request to pair, while the PC asks whoever is there.
+enum Asking {
+    No,
+    /// Sent; the number both screens show is not known yet.
+    Sent,
+    /// "Click Yes on the PC" is up.
+    Shown,
+    /// The answer came while "Click Yes" was up; it shows once that closes.
+    Answered(Result<PcRecord, String>),
+    /// Given up with Cancel; the answer, when it comes, is dropped.
+    Cancelled,
+}
+
+fn set_asking(a: Asking) -> Asking {
+    ASKING.with(|cell| std::mem::replace(&mut *cell.borrow_mut(), a))
+}
+
+/// Pair with a PC: search the network (off the main thread), then offer the PCs found. Main
+/// thread. Does nothing while a pairing is already under way.
 fn search_then_pair() {
     if !PAIRING.with(|p| p.replace(true)) {
         search();
@@ -537,66 +557,161 @@ fn search_then_pair() {
 fn search() {
     std::thread::spawn(|| {
         let found = pc::discover();
-        macos::on_main(move || match ask_for_code(found) {
-            Choice::Pair(addr, code) => pair(addr, code),
+        macos::on_main(move || match choose_pc(found) {
+            Choice::Ask(pc) => ask(pc),
+            Choice::Code(found) => match ask_for_code(&found) {
+                Some((addr, code)) => pair_with_code(addr, code),
+                None => done(),
+            },
             Choice::SearchAgain => search(),
-            Choice::Cancel => PAIRING.with(|p| p.set(false)),
+            Choice::Cancel => done(),
         });
     });
 }
 
+/// The pairing dialogs have closed.
+fn done() {
+    PAIRING.with(|p| p.set(false));
+}
+
 enum Choice {
-    Pair(SocketAddr, String),
+    Ask(Found),
+    Code(Vec<Found>),
     SearchAgain,
     Cancel,
 }
 
-fn ask_for_code(found: Result<Vec<Found>, String>) -> Choice {
+/// A menu of the PCs found, `y` points up a view `height` tall and `width` wide.
+fn pc_menu(mtm: MainThreadMarker, found: &[Found], y: f64, width: f64, height: f64) -> (Retained<NSView>, Retained<NSPopUpButton>) {
+    let view = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height)));
+    let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::new(NSPoint::new(0.0, y), NSSize::new(width, 26.0)), false);
+    for f in found {
+        popup.addItemWithTitle(&NSString::from_str(&format!("{} ({})", f.name, f.addr.ip())));
+    }
+    view.addSubview(&popup);
+    (view, popup)
+}
+
+fn picked(popup: &NSPopUpButton, found: &[Found]) -> usize {
+    popup.indexOfSelectedItem().clamp(0, found.len() as isize - 1) as usize
+}
+
+/// Offer the PCs found: connect to one (it asks whoever is there to allow this Mac), or pair with
+/// a code.
+fn choose_pc(found: Result<Vec<Found>, String>) -> Choice {
     let mtm = MainThreadMarker::new().unwrap();
     let found = match found {
         Ok(f) if !f.is_empty() => f,
         other => {
             let why = other.err().unwrap_or_else(|| {
-                format!("Install Hop on your Windows PC, on the same network as this Mac. Then, on the PC, open the Hop icon in the taskbar and choose \"{PC_PAIR_ITEM}\".")
+                "Install Hop on your Windows PC (gethop.vercel.app), on the same network as this Mac, then search again.".into()
             });
             return if show_alert(mtm, "No PC found", &why, &["Search Again", "Cancel"], None) == 0 { Choice::SearchAgain } else { Choice::Cancel };
         }
     };
-    let width = 260.0;
-    let view = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, 58.0)));
-    let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::new(NSPoint::new(0.0, 32.0), NSSize::new(width, 26.0)), false);
-    for f in &found {
-        popup.addItemWithTitle(&NSString::from_str(&format!("{} ({})", f.name, f.addr.ip())));
+    let buttons = ["Connect", "Use a Code…", "Cancel"];
+    let choice = if let [pc] = &found[..] {
+        let info = format!("Hop found {} on your network. The PC will ask whoever is there to allow this Mac.", pc.name);
+        (show_alert(mtm, &format!("Connect to {}?", pc.name), &info, &buttons, None), 0)
+    } else {
+        let (view, popup) = pc_menu(mtm, &found, 0.0, 260.0, 26.0);
+        let info = "Hop found these PCs on your network. The one you choose asks whoever is there to allow this Mac.";
+        let button = show_alert(mtm, "Connect to a PC", info, &buttons, Some(&view));
+        (button, picked(&popup, &found))
+    };
+    match choice {
+        (0, pick) => Choice::Ask(found[pick].clone()),
+        (1, _) => Choice::Code(found),
+        _ => Choice::Cancel,
     }
-    view.addSubview(&popup);
+}
+
+/// Ask `pc` to pair, off the main thread; "Click Yes on the PC" shows while it asks.
+fn ask(pc: Found) {
+    set_asking(Asking::Sent);
+    std::thread::spawn(move || {
+        let name = pc.name.clone();
+        let r = pc::ask(pc.addr, &pc.name, Some(pc.public), move |number, cancel| {
+            macos::on_main(move || wait_for_yes(&name, &number, cancel));
+        });
+        macos::on_main(move || answered(r));
+    });
+}
+
+/// Show "Click Yes on the PC" until the PC answers (see [`answered`]) or Cancel. Main thread.
+fn wait_for_yes(pc: &str, number: &str, cancel: TcpStream) {
+    if !matches!(set_asking(Asking::Shown), Asking::Sent) {
+        set_asking(Asking::No);
+        return; // the answer came first
+    }
+    let mtm = MainThreadMarker::new().unwrap();
+    let app = NSApplication::sharedApplication(mtm);
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(&format!("Click Yes on {pc}")));
+    alert.setInformativeText(&NSString::from_str(&format!(
+        "{pc} is asking whoever is there to allow this Mac. It shows this number too; if its number is different, click No there.\n\n{number}"
+    )));
+    alert.addButtonWithTitle(ns_string!("Cancel"));
+    alert.runModal();
+    // Closed by the answer, or by Cancel.
+    match set_asking(Asking::No) {
+        Asking::Answered(r) => finished(r),
+        _ => {
+            let _ = cancel.shutdown(Shutdown::Both);
+            set_asking(Asking::Cancelled);
+        }
+    }
+}
+
+/// The PC answered, or asking failed. Main thread.
+fn answered(r: Result<PcRecord, String>) {
+    match set_asking(Asking::No) {
+        Asking::Shown => {
+            set_asking(Asking::Answered(r));
+            NSApplication::sharedApplication(MainThreadMarker::new().unwrap()).abortModal();
+        }
+        Asking::Cancelled => done(),
+        _ => finished(r), // before the number was known
+    }
+}
+
+/// Ask for the code a PC shows; `None` if cancelled.
+fn ask_for_code(found: &[Found]) -> Option<(SocketAddr, String)> {
+    let mtm = MainThreadMarker::new().unwrap();
+    let width = 260.0;
+    let (view, popup) = pc_menu(mtm, found, 32.0, width, 58.0);
     let field = NSTextField::initWithFrame(NSTextField::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, 24.0)));
     field.setPlaceholderString(Some(ns_string!("Code shown on the PC")));
     view.addSubview(&field);
-    let info = format!("On the PC, open the Hop icon in the taskbar and choose \"{PC_PAIR_ITEM}\", then type the code it shows.");
-    if show_alert(mtm, MAC_PAIR_ITEM, &info, &["Pair", "Cancel"], Some(&view)) != 0 {
-        return Choice::Cancel;
+    let info = format!("On the PC, click the Hop icon in the taskbar and choose \"{PC_PAIR_ITEM}\", then type the code it shows.");
+    if show_alert(mtm, "Pair with a Code", &info, &["Pair", "Cancel"], Some(&view)) != 0 {
+        return None;
     }
-    let pick = popup.indexOfSelectedItem().clamp(0, found.len() as isize - 1) as usize;
-    Choice::Pair(found[pick].addr, field.stringValue().to_string())
+    Some((found[picked(&popup, found)].addr, field.stringValue().to_string()))
 }
 
-fn pair(addr: SocketAddr, code: String) {
+fn pair_with_code(addr: SocketAddr, code: String) {
     std::thread::spawn(move || {
         let r = pc::pair_with(addr, &code);
-        macos::on_main(move || {
-            let mtm = MainThreadMarker::new().unwrap();
-            match r {
-                Ok(rec) => {
-                    let info = format!("Press {HOTKEY} and the arrow toward the PC to use it; the same with the other arrow brings you back. The Settings menu sets where the PC is.");
-                    show_alert(mtm, &format!("Paired with {}", rec.name), &info, &["OK"], None);
-                }
-                Err(e) => {
-                    if show_alert(mtm, "Pairing did not work", &e, &["Try Again", "Cancel"], None) == 0 {
-                        return search();
-                    }
-                }
-            }
-            PAIRING.with(|p| p.set(false));
-        });
+        macos::on_main(move || finished(r));
     });
+}
+
+/// Say how pairing ended, and close the pairing dialogs (or start over). Main thread.
+fn finished(r: Result<PcRecord, String>) {
+    let mtm = MainThreadMarker::new().unwrap();
+    match r {
+        Ok(rec) => {
+            let info = format!("Press {HOTKEY} and the arrow toward the PC to use it; the same with the other arrow brings you back. The Settings menu sets where the PC is.");
+            show_alert(mtm, &format!("Paired with {}", rec.name), &info, &["OK"], None);
+        }
+        Err(e) => {
+            if show_alert(mtm, "Pairing did not work", &e, &["Try Again", "Cancel"], None) == 0 {
+                return search();
+            }
+        }
+    }
+    done();
 }
