@@ -19,4 +19,4 @@
 | The generation is taken when the person says yes, not when the request arrives | Requests nobody allowed must not cancel a code pairing under way |
 | A replaced Mac's screen view runs until its window closes | The video process checks the pairing at each handshake only; the input session, which can type, ends at once |
 | If the PC cannot store the Mac after the Mac stored the PC, the Mac believes it is paired | The two stores are on two machines; pairing again fixes it |
-| The Mac's "Click Yes" dialog is closed from the answer with `abortModal` | AppKit has no other way to end a modal alert from code |
+| The Mac's "Click Yes" dialog checks for the answer about 50 times a second | It runs inside a block from the main queue, which runs no other block until it returns, so an answer sent there would wait for the dialog to close |

@@ -94,9 +94,23 @@ struct Pairings {
 }
 
 impl Pairings {
-    /// A generation for a pairing that starts now (see [`crate::store::PairingLock`]).
-    fn begin(&self) -> Result<String, String> {
-        self.store.lock().and_then(|mut l| l.new_generation()).map_err(|e| format!("{}: {e}", self.store.dir.display()))
+    fn failed(&self, e: io::Error) -> String {
+        format!("{}: {e}", self.store.dir.display())
+    }
+
+    /// The current generation (see [`crate::store::PairingLock`]), to start a pairing from later.
+    fn generation(&self) -> Result<Option<String>, String> {
+        self.store.lock().map(|l| l.generation()).map_err(|e| self.failed(e))
+    }
+
+    /// A generation for a pairing that starts now, if nothing changed since `seen` (from
+    /// [`generation`](Self::generation)); `None` for any time.
+    fn begin(&self, seen: Option<Option<&str>>) -> Result<String, String> {
+        let mut l = self.store.lock().map_err(|e| self.failed(e))?;
+        if seen.is_some_and(|seen| l.generation().as_deref() != seen) {
+            return Err("an Unpair or another pairing happened meanwhile".into());
+        }
+        l.new_generation().map_err(|e| self.failed(e))
     }
 
     /// Store `p` and use it from now on, unless an Unpair or a newer pairing replaced this one.
@@ -106,13 +120,12 @@ impl Pairings {
                 return Ok(false);
             }
             l.save_peer(&MacRecord { public: p.public, name: p.name.clone() })?;
+            // Still under the lock, so the Mac in use is always the one stored last.
+            *self.paired.lock().unwrap() = Some(p.public);
             Ok(true)
         });
         match saved {
-            Ok(true) => {
-                *self.paired.lock().unwrap() = Some(p.public);
-                (self.events)(AgentEvent::Paired(p));
-            }
+            Ok(true) => (self.events)(AgentEvent::Paired(p)),
             Ok(false) => (self.events)(AgentEvent::PairingFailed(format!("{} paired, but an Unpair or a newer pairing replaced it", p.name))),
             Err(e) => (self.events)(AgentEvent::PairingFailed(format!("{} paired, but saving failed: {e}", p.name))),
         }
@@ -120,7 +133,7 @@ impl Pairings {
 }
 
 fn spawn_pairing(listener: TcpListener, window: PairingWindow, keys: StaticKeys, name: String, pairings: Pairings, stop: Arc<AtomicBool>) {
-    let generation = match pairings.begin() {
+    let generation = match pairings.begin(None) {
         Ok(g) => g,
         Err(e) => return (pairings.events)(AgentEvent::PairingFailed(e)),
     };
@@ -173,6 +186,8 @@ fn spawn_asking(listener: TcpListener, asker: Arc<dyn Asker>, keys: StaticKeys, 
 /// `Err` when it was turned down or did not finish.
 fn answer_request(s: std::net::TcpStream, asker: &dyn Asker, keys: &StaticKeys, name: &str, pairings: &Pairings) -> Result<(), String> {
     let req = ask::accept(s, keys, name).map_err(|e| e.to_string())?;
+    // Read, not replaced: requests nobody allows must not disturb a pairing under way.
+    let seen = pairings.generation()?;
     let current = pairings.store.peer();
     let replaces = current.filter(|c| c.public != req.mac.public).map(|c| c.name);
     let answer = asker.ask(&req.mac.name, &ask::check_text(req.check), replaces.as_deref());
@@ -181,8 +196,14 @@ fn answer_request(s: std::net::TcpStream, asker: &dyn Asker, keys: &StaticKeys, 
         req.refuse(answer);
         return Err(format!("{who}: {answer:?}"));
     }
-    // Taken once allowed, so requests nobody allowed never disturb a pairing under way.
-    let generation = pairings.begin()?;
+    // An Unpair or another pairing while the person was deciding wins over this one.
+    let generation = match pairings.begin(Some(seen.as_deref())) {
+        Ok(g) => g,
+        Err(why) => {
+            req.refuse(Answer::Declined);
+            return Err(why);
+        }
+    };
     let p = req.allow().map_err(|e| e.to_string())?;
     pairings.finish(&generation, p);
     Ok(())
@@ -298,8 +319,7 @@ pub fn run(
         // A different Mac was paired: the old one's session ends, and whatever it held is let go.
         let now_paired = *paired.lock().unwrap();
         if now_paired != serving {
-            receiver.release_all(platform);
-            receiver = Receiver::default();
+            receiver.reset(platform);
             responder = Responder::new(cfg.keys.clone());
             serving = now_paired;
         }

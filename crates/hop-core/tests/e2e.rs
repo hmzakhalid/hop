@@ -587,3 +587,23 @@ fn a_mac_turned_down_is_not_paired_and_cannot_ask_again_at_once() {
     assert!(ask_agent(&agent, &other, "Other").is_err(), "refused during the cool-down");
     assert_eq!(AgentStore::new(agent.store_dir.clone()).peer().unwrap().public, first.public, "still the first Mac");
 }
+
+/// Says yes, but only after an Unpair has happened while it was asking. The agent's folder is
+/// known only once the agent runs, hence the slot.
+struct UnpairWhileAsking(Mutex<std::path::PathBuf>);
+
+impl Asker for UnpairWhileAsking {
+    fn ask(&self, _: &str, _: &str, _: Option<&str>) -> Answer {
+        AgentStore::new(self.0.lock().unwrap().clone()).lock().unwrap().forget_peer().unwrap();
+        Answer::Allowed
+    }
+}
+
+#[test]
+fn an_unpair_while_the_pc_asks_wins() {
+    let asker = Arc::new(UnpairWhileAsking(Mutex::default()));
+    let agent = start_agent_asking(&StaticKeys::generate(), Some(asker.clone()));
+    *asker.0.lock().unwrap() = agent.store_dir.clone();
+    assert_eq!(ask_agent(&agent, &StaticKeys::generate(), "Other").unwrap().0, Answer::Declined);
+    assert!(AgentStore::new(agent.store_dir.clone()).peer().is_none(), "the Unpair stands");
+}

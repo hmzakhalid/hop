@@ -18,12 +18,12 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSAlert, NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSPopUpButton,
+    NSAlert, NSApplication, NSControlStateValueOff, NSModalResponseContinue, NSControlStateValueOn, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSPopUpButton,
     NSStatusBar, NSStatusItem, NSTextField, NSVariableStatusItemLength, NSView, NSWorkspace,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL};
 use hop_core::store::PcRecord;
-use std::cell::{Cell, OnceCell, RefCell};
+use std::cell::{Cell, OnceCell};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -525,25 +525,6 @@ fn open_url(url: &str) {
 thread_local! {
     /// A pairing dialog is up, or about to be (main thread).
     static PAIRING: Cell<bool> = const { Cell::new(false) };
-    /// Where a request to a PC stands (main thread).
-    static ASKING: RefCell<Asking> = const { RefCell::new(Asking::No) };
-}
-
-/// A request to pair, while the PC asks whoever is there.
-enum Asking {
-    No,
-    /// Sent; the number both screens show is not known yet.
-    Sent,
-    /// "Click Yes on the PC" is up.
-    Shown,
-    /// The answer came while "Click Yes" was up; it shows once that closes.
-    Answered(Result<PcRecord, String>),
-    /// Given up with Cancel; the answer, when it comes, is dropped.
-    Cancelled,
-}
-
-fn set_asking(a: Asking) -> Asking {
-    ASKING.with(|cell| std::mem::replace(&mut *cell.borrow_mut(), a))
 }
 
 /// Pair with a PC: search the network (off the main thread), then offer the PCs found. Main
@@ -626,55 +607,91 @@ fn choose_pc(found: Result<Vec<Found>, String>) -> Choice {
     }
 }
 
-/// Ask `pc` to pair, off the main thread; "Click Yes on the PC" shows while it asks.
-fn ask(pc: Found) {
-    set_asking(Asking::Sent);
-    std::thread::spawn(move || {
-        let name = pc.name.clone();
-        let r = pc::ask(pc.addr, &pc.name, Some(pc.public), move |number, cancel| {
-            macos::on_main(move || wait_for_yes(&name, &number, cancel));
-        });
-        macos::on_main(move || answered(r));
-    });
+/// A request to pair while it runs: the asking thread fills it in, the dialog reads it.
+#[derive(Default)]
+struct Request {
+    /// The number both screens show, once known.
+    number: Option<String>,
+    /// Shut down to give up, once the number is known.
+    cancel: Option<TcpStream>,
+    cancelled: bool,
+    result: Option<Result<PcRecord, String>>,
 }
 
-/// Show "Click Yes on the PC" until the PC answers (see [`answered`]) or Cancel. Main thread.
-fn wait_for_yes(pc: &str, number: &str, cancel: TcpStream) {
-    if !matches!(set_asking(Asking::Shown), Asking::Sent) {
-        set_asking(Asking::No);
-        return; // the answer came first
-    }
+/// Ask `pc` to pair: the asking runs on its own thread, while a dialog says "Asking…", then
+/// "Click Yes on the PC" with the number, until the answer or Cancel. Main thread.
+fn ask(pc: Found) {
+    let req = Arc::new(Mutex::new(Request::default()));
+    let name = pc.name.clone();
+    let shared = req.clone();
+    std::thread::spawn(move || {
+        let result = pc::ask(pc.addr, &pc.name, Some(pc.public), |number, cancel| {
+            let mut r = shared.lock().unwrap();
+            if r.cancelled {
+                let _ = cancel.shutdown(Shutdown::Both);
+            }
+            (r.number, r.cancel) = (Some(number), Some(cancel));
+        });
+        shared.lock().unwrap().result = Some(result);
+    });
     let mtm = MainThreadMarker::new().unwrap();
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(&format!("Asking {name}…")));
+    alert.setInformativeText(ns_string!("Hop is reaching the PC."));
+    alert.addButtonWithTitle(ns_string!("Cancel"));
+    let mut shown = false;
+    let answer = alert_until(mtm, &alert, || {
+        let mut r = req.lock().unwrap();
+        if let Some(result) = r.result.take() {
+            return Some(result);
+        }
+        if let (false, Some(number)) = (shown, &r.number) {
+            shown = true;
+            alert.setMessageText(&NSString::from_str(&format!("Click Yes on {name}")));
+            alert.setInformativeText(&NSString::from_str(&format!(
+                "{name} is asking whoever is there to allow this Mac. It shows this number too; if its number is different, click No there.\n\n{number}"
+            )));
+            alert.layout();
+        }
+        None
+    });
+    match answer {
+        Some(result) => finished(result),
+        None => {
+            let mut r = req.lock().unwrap();
+            r.cancelled = true;
+            if let Some(c) = r.cancel.take() {
+                let _ = c.shutdown(Shutdown::Both);
+            }
+            done();
+        }
+    }
+}
+
+/// Show `alert` until `poll` returns something (it is checked about 50 times a second), or until
+/// a button is pressed (`None`). It polls because it runs inside a block from the main queue,
+/// which runs no other block until this one returns: an answer sent there would wait for it.
+fn alert_until<T>(mtm: MainThreadMarker, alert: &NSAlert, mut poll: impl FnMut() -> Option<T>) -> Option<T> {
     let app = NSApplication::sharedApplication(mtm);
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(&NSString::from_str(&format!("Click Yes on {pc}")));
-    alert.setInformativeText(&NSString::from_str(&format!(
-        "{pc} is asking whoever is there to allow this Mac. It shows this number too; if its number is different, click No there.\n\n{number}"
-    )));
-    alert.addButtonWithTitle(ns_string!("Cancel"));
-    alert.runModal();
-    // Closed by the answer, or by Cancel.
-    match set_asking(Asking::No) {
-        Asking::Answered(r) => finished(r),
-        _ => {
-            let _ = cancel.shutdown(Shutdown::Both);
-            set_asking(Asking::Cancelled);
+    alert.layout();
+    let window = alert.window();
+    window.center();
+    let session = app.beginModalSessionForWindow(&window);
+    let result = loop {
+        // Handles the waiting events, including a button, which ends the session.
+        if unsafe { app.runModalSession(session) } != NSModalResponseContinue {
+            break None;
         }
-    }
-}
-
-/// The PC answered, or asking failed. Main thread.
-fn answered(r: Result<PcRecord, String>) {
-    match set_asking(Asking::No) {
-        Asking::Shown => {
-            set_asking(Asking::Answered(r));
-            NSApplication::sharedApplication(MainThreadMarker::new().unwrap()).abortModal();
+        if let Some(t) = poll() {
+            break Some(t);
         }
-        Asking::Cancelled => done(),
-        _ => finished(r), // before the number was known
-    }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    unsafe { app.endModalSession(session) };
+    window.orderOut(None);
+    result
 }
 
 /// Ask for the code a PC shows; `None` if cancelled.
