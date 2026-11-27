@@ -4,7 +4,7 @@
 
 The first public release. Hop is free and open source under the GPL-3.0.
 
-Updated on 27 November 2026. If you downloaded Hop before then, download it again on both machines and install it over the old one:
+Updated on 28 November 2026. If you downloaded Hop before then, download it again on both machines and install it over the old one:
 - **Pairing is a click:** Connect on the Mac, Yes on the PC, with the same number on both screens. A code still works, from **Use a Code…**.
 - A Mac paired by the first download no longer shows the pairing window at every launch.
 - Reinstalling Hop on the PC no longer swaps the PC's key, which broke pairing.
