@@ -615,6 +615,8 @@ struct Request {
     /// Shut down to give up, once the number is known.
     cancel: Option<TcpStream>,
     cancelled: bool,
+    /// The PC said yes and the pairing is being stored: too late to cancel.
+    committing: bool,
     result: Option<Result<PcRecord, String>>,
 }
 
@@ -632,13 +634,21 @@ fn ask(pc: Found) {
             }
             (r.number, r.cancel) = (Some(number), Some(cancel));
         });
-        // Under the lock, so Cancel either comes first (nothing is stored) or finds the result.
-        let mut r = shared.lock().unwrap();
-        r.result = Some(match asked {
-            Ok(_) if r.cancelled => return,
-            Ok(allowed) => allowed.keep(),
+        // Decided under the lock, so Cancel either comes first (nothing is stored) or waits for
+        // the result; stored outside it, so the dialog never waits on the disk or the network.
+        let result = match asked {
+            Ok(allowed) => {
+                let mut r = shared.lock().unwrap();
+                if r.cancelled {
+                    return;
+                }
+                r.committing = true;
+                drop(r);
+                allowed.keep()
+            }
             Err(e) => Err(e),
-        });
+        };
+        shared.lock().unwrap().result = Some(result);
     });
     let mtm = MainThreadMarker::new().unwrap();
     let alert = NSAlert::new(mtm);
@@ -646,7 +656,7 @@ fn ask(pc: Found) {
     alert.setInformativeText(ns_string!("Hop is reaching the PC."));
     alert.addButtonWithTitle(ns_string!("Cancel"));
     let mut shown = false;
-    let answer = alert_until(mtm, &alert, || {
+    let mut poll = || {
         let mut r = req.lock().unwrap();
         if let Some(result) = r.result.take() {
             return Some(result);
@@ -660,18 +670,24 @@ fn ask(pc: Found) {
             alert.layout();
         }
         None
-    });
-    let answer = answer.or_else(|| {
-        // Cancel: give up, unless the answer is already in (and stored).
+    };
+    let answer = loop {
+        if let Some(result) = alert_until(mtm, &alert, &mut poll) {
+            break Some(result);
+        }
+        // Cancel: give up, unless the answer is in, or being stored (then wait for it).
         let mut r = req.lock().unwrap();
-        r.result.take().or_else(|| {
+        if let Some(result) = r.result.take() {
+            break Some(result);
+        }
+        if !r.committing {
             r.cancelled = true;
             if let Some(c) = r.cancel.take() {
                 let _ = c.shutdown(Shutdown::Both);
             }
-            None
-        })
-    });
+            break None;
+        }
+    };
     match answer {
         Some(result) => finished(result),
         None => done(),
