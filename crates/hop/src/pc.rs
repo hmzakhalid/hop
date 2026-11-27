@@ -67,10 +67,28 @@ fn finish(store: &MacStore, generation: &str, rec: &PcRecord) -> Result<(), Stri
     lock.save_peer(rec).map_err(saving)
 }
 
+/// A PC that said yes, not stored yet: [`Allowed::keep`] stores it on both machines; dropping it
+/// leaves both as they were.
+pub struct Allowed {
+    store: MacStore,
+    generation: String,
+    rec: PcRecord,
+    asking: ask::Asking,
+}
+
+impl Allowed {
+    pub fn keep(self) -> Result<PcRecord, String> {
+        finish(&self.store, &self.generation, &self.rec)?;
+        // Only now does the PC store it; if this fails, the PC never will, and pairing again fixes it.
+        self.asking.saved().map_err(|e| format!("Paired here, but {} did not hear back: {e}. Pair again.", self.rec.name))?;
+        Ok(self.rec)
+    }
+}
+
 /// Ask the PC at `addr` (its agent's address; `announced`: the key it gave when found) to pair:
 /// someone at the PC allows it. `waiting(number, cancel)` is called once the number both screens
 /// show is known; shutting `cancel` down gives up.
-pub fn ask(addr: SocketAddr, name: &str, announced: Option<[u8; 32]>, waiting: impl FnOnce(String, TcpStream)) -> Result<PcRecord, String> {
+pub fn ask(addr: SocketAddr, name: &str, announced: Option<[u8; 32]>, waiting: impl FnOnce(String, TcpStream)) -> Result<Allowed, String> {
     let store = store();
     let (generation, keys) = begin(&store)?;
     let to = SocketAddr::new(addr.ip(), ask::port(addr.port()).ok_or("no port to ask on")?);
@@ -104,10 +122,7 @@ pub fn ask(addr: SocketAddr, name: &str, announced: Option<[u8; 32]>, waiting: i
         Answer::NoAnswer => return Err(format!("Nobody answered on {pc}. If it is locked, unlock it and try again.")),
     }
     let rec = PcRecord { public: asking.pc.public, name: pc, addr: Some(addr) };
-    finish(&store, &generation, &rec)?;
-    // Only now does the PC store it; if this fails, the PC never will, and pairing again fixes it.
-    asking.saved().map_err(|e| format!("Paired here, but {} did not hear back: {e}. Pair again.", rec.name))?;
-    Ok(rec)
+    Ok(Allowed { store, generation, rec, asking })
 }
 
 /// Pair with the PC at `addr` using the code it shows, and remember it.

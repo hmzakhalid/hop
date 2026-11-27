@@ -625,14 +625,20 @@ fn ask(pc: Found) {
     let name = pc.name.clone();
     let shared = req.clone();
     std::thread::spawn(move || {
-        let result = pc::ask(pc.addr, &pc.name, Some(pc.public), |number, cancel| {
+        let asked = pc::ask(pc.addr, &pc.name, Some(pc.public), |number, cancel| {
             let mut r = shared.lock().unwrap();
             if r.cancelled {
                 let _ = cancel.shutdown(Shutdown::Both);
             }
             (r.number, r.cancel) = (Some(number), Some(cancel));
         });
-        shared.lock().unwrap().result = Some(result);
+        // Under the lock, so Cancel either comes first (nothing is stored) or finds the result.
+        let mut r = shared.lock().unwrap();
+        r.result = Some(match asked {
+            Ok(_) if r.cancelled => return,
+            Ok(allowed) => allowed.keep(),
+            Err(e) => Err(e),
+        });
     });
     let mtm = MainThreadMarker::new().unwrap();
     let alert = NSAlert::new(mtm);
@@ -655,16 +661,20 @@ fn ask(pc: Found) {
         }
         None
     });
-    match answer {
-        Some(result) => finished(result),
-        None => {
-            let mut r = req.lock().unwrap();
+    let answer = answer.or_else(|| {
+        // Cancel: give up, unless the answer is already in (and stored).
+        let mut r = req.lock().unwrap();
+        r.result.take().or_else(|| {
             r.cancelled = true;
             if let Some(c) = r.cancel.take() {
                 let _ = c.shutdown(Shutdown::Both);
             }
-            done();
-        }
+            None
+        })
+    });
+    match answer {
+        Some(result) => finished(result),
+        None => done(),
     }
 }
 

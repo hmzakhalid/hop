@@ -42,6 +42,7 @@ pub fn pair(host: Option<&str>, code: bool) -> Result<(), String> {
         pc::ask(addr, &label, announced, |number, _| {
             println!("On the PC, check that it shows {number}, then click Yes. (Ctrl+C gives up.)");
         })?
+        .keep()?
     };
     println!("Paired with {} (key {}).", rec.name, fingerprint(&rec.public));
     println!("Now run: hop");
