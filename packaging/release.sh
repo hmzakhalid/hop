@@ -60,7 +60,8 @@ if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
   echo "The build changed tracked files (a redrawn icon?); commit them, then release." >&2
   exit 1
 fi
-signature=$(codesign -dvv "$MAC_APP" 2>&1) # Authority lines appear only at -vv || { echo "Could not read Hop.app's signature." >&2; exit 1; }
+# Authority lines appear only at -vv.
+signature=$(codesign -dvv "$MAC_APP" 2>&1) || { echo "Could not read Hop.app's signature." >&2; exit 1; }
 grep -q '^Authority=' <<<"$signature" || { echo "Hop.app is not certificate-signed. Not releasing." >&2; exit 1; }
 
 OUT="$ROOT/dist/release"

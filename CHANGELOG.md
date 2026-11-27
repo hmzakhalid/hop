@@ -4,6 +4,16 @@
 
 The first public release. Hop is free and open source under the GPL-3.0.
 
+Updated on 27 November 2026 with fixes. If you downloaded Hop before then, download it again and install it over the old one:
+- Reinstalling Hop on the PC no longer swaps the PC's key, which broke pairing.
+- The Mac keeps up when the PC moves to a new network address.
+- A pairing code stops working as soon as it expires.
+- Reopening the screen view window works every time.
+- ⌃L locks the PC once, not again on every key repeat.
+- Mouse buttons 8 and up each work on their own.
+- Quitting Hop always gives the Mac its keyboard back first.
+- Smaller fixes to pairing, timing and the command line.
+
 - **Use your Mac's keyboard and trackpad on a Windows PC.** Press ⌃⌥⌘→ to go to the PC and ⌃⌥⌘← to come back, or push the pointer past the screen edge.
 - **Mac shortcuts on Windows:**
   - ⌘C, ⌘V, ⌘Z and ⌘S work as Ctrl.
