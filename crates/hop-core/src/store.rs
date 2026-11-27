@@ -72,6 +72,9 @@ pub struct Store<R: Record> {
     _record: std::marker::PhantomData<R>,
 }
 
+/// Longest [`Store::lock`] waits for another holder.
+pub const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub type MacStore = Store<PcRecord>;
 pub type AgentStore = Store<MacRecord>;
 
@@ -125,11 +128,22 @@ impl<R: Record> Store<R> {
     /// Take the lock under which the pairing changes. Every process using this folder shares it
     /// (an OS file lock on `pairing.lock`, released when the guard drops), so the app and the
     /// command line, or the console agent and the service, never interleave a change.
+    /// Gives up after [`LOCK_WAIT`]: every holder keeps it for moments, so a longer wait means a
+    /// stuck process, and the caller should say so rather than hang.
     pub fn lock(&self) -> io::Result<PairingLock<'_, R>> {
         fs::create_dir_all(&self.dir)?;
         let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(self.dir.join("pairing.lock"))?;
-        file.lock()?;
-        Ok(PairingLock { store: self, _file: file })
+        let until = std::time::Instant::now() + LOCK_WAIT;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(PairingLock { store: self, _file: file }),
+                Err(fs::TryLockError::WouldBlock) if std::time::Instant::now() < until => std::thread::sleep(std::time::Duration::from_millis(20)),
+                Err(fs::TryLockError::WouldBlock) => {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "another Hop program is changing the pairing; try again"))
+                }
+                Err(fs::TryLockError::Error(e)) => return Err(e),
+            }
+        }
     }
 }
 
@@ -296,6 +310,20 @@ mod tests {
         assert_ne!(lock.generation().as_deref(), Some(pairing.as_str()), "a pairing that started before a Forget is stale");
         drop(lock);
         fs::remove_dir_all(&s.dir).unwrap();
+    }
+
+    #[test]
+    fn a_held_lock_makes_others_give_up_not_hang() {
+        let dir = std::env::temp_dir().join(format!("hop-lock-{:032x}", crate::crypto::random_u128()));
+        let s = AgentStore::new(dir.clone());
+        let held = s.lock().unwrap();
+        let other = AgentStore::new(dir.clone()); // its own file handle, as another process has
+        let t = std::time::Instant::now();
+        assert_eq!(other.lock().err().map(|e| e.kind()), Some(io::ErrorKind::TimedOut));
+        assert!(t.elapsed() >= LOCK_WAIT && t.elapsed() < LOCK_WAIT + std::time::Duration::from_secs(2));
+        drop(held);
+        assert!(other.lock().is_ok());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
